@@ -1,0 +1,9 @@
+{
+  "ok": false,
+  "data": {
+    "detail": "Invalid or missing request fields"
+  },
+  "error": "bad_request",
+  "tx_signatures": [],
+  "transactions": []
+}
