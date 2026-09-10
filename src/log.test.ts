@@ -85,6 +85,10 @@ describe('executor log', () => {
     expect(parsed.request.pool).toBe('poolAAA');
     expect(parsed.response.wallet_pubkey).toBe('9hwyZku17mtdVAKVHtXWA116DCdFsmUFAw3zrdZqzBNw');
     expect(parsed.response.tx_signatures).toEqual([signature]);
+    expect(redact({ from_signature: signature, to_signature: signature })).toEqual({
+      from_signature: signature,
+      to_signature: signature,
+    });
   });
 
   it('gzipOlderThan touches stale non-swap logs only', () => {

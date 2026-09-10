@@ -8,6 +8,8 @@
 // decimals from SDK reserves; retain actual bin IDs (upstream put prices in
 // lowerBinId/upperBinId). SDK proportional amounts are floored to raw units;
 // exact fee BNs remain unchanged. USD enrichment stays with the M2 caller.
+// Delta (M2): do not sleep after the final failed attempt; there is no next
+// request to back off before and doing so delays normalized RPC errors.
 
 import BN from 'bn.js';
 import { createRequire } from 'node:module';
@@ -36,8 +38,10 @@ export async function withRetry<T>(
       return await fn();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      onRetry?.(i + 1, lastError);
-      await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (i + 1)));
+      if (i < retries - 1) {
+        onRetry?.(i + 1, lastError);
+        await new Promise((resolve) => setTimeout(resolve, baseDelayMs * (i + 1)));
+      }
     }
   }
   throw new RetryExhausted(

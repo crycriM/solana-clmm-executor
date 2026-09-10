@@ -8,12 +8,16 @@
 
 import { createHash } from 'node:crypto';
 import { PublicKey } from '@solana/web3.js';
+import { DEFAULT_RPC_MAX_CU_PER_SECOND } from './rpcRateLimit.js';
 
 export type SignerKind = 'kms' | 'keypair' | 'file';
 
 export interface ExecutorConfig {
   rpcReadUrl: string;
   rpcWriteUrl: string;
+  /** Optional explicit websocket endpoint; web3.js otherwise derives it. */
+  rpcWsUrl: string | null;
+  rpcMaxCuPerSecond: number;
   commitment: 'confirmed' | 'finalized';
   walletSigner: SignerKind;
   kmsKeyArn: string | null;
@@ -86,6 +90,16 @@ function httpUrl(value: string, key: string): void {
   throw new ConfigValidationError(`${key} must be an HTTP(S) URL`);
 }
 
+function wsUrl(value: string, key: string): void {
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'ws:' || url.protocol === 'wss:') return;
+  } catch {
+    /* Report only the key: websocket URLs can contain credentials. */
+  }
+  throw new ConfigValidationError(`${key} must be a WS(S) URL`);
+}
+
 function allowlist(env: Record<string, string | undefined>, key: string): string[] {
   const values = [...new Set(splitList(required(env, key)))].sort();
   if (values.length === 0) throw new ConfigValidationError(`${key} must not be empty`);
@@ -103,6 +117,10 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
   return {
     rpcReadUrl: required(env, 'SOLANA_RPC_URL'),
     rpcWriteUrl: optional(env, 'SOLANA_RPC_WRITE_URL', required(env, 'SOLANA_RPC_URL')),
+    rpcWsUrl: optional(env, 'SOLANA_WS_URL') || null,
+    rpcMaxCuPerSecond: env['SOLANA_RPC_MAX_CU_PER_SECOND']
+      ? number(env, 'SOLANA_RPC_MAX_CU_PER_SECOND')
+      : DEFAULT_RPC_MAX_CU_PER_SECOND,
     commitment: optional(env, 'SOLANA_COMMITMENT', 'confirmed') as ExecutorConfig['commitment'],
     walletSigner: required(env, 'WALLET_SIGNER') as SignerKind,
     kmsKeyArn: optional(env, 'KMS_KEY_ARN') || null,
@@ -140,6 +158,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   httpUrl(config.rpcReadUrl, 'SOLANA_RPC_URL');
   httpUrl(config.rpcWriteUrl, 'SOLANA_RPC_WRITE_URL');
+  if (config.rpcWsUrl) wsUrl(config.rpcWsUrl, 'SOLANA_WS_URL');
+  if (config.rpcMaxCuPerSecond <= 0) {
+    throw new ConfigValidationError('SOLANA_RPC_MAX_CU_PER_SECOND must be greater than zero');
+  }
   if (config.jitoBlockEngineUrl) httpUrl(config.jitoBlockEngineUrl, 'JITO_BLOCK_ENGINE_URL');
   if (config.commitment !== 'confirmed' && config.commitment !== 'finalized') {
     throw new ConfigValidationError('SOLANA_COMMITMENT must be confirmed|finalized');

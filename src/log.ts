@@ -41,7 +41,7 @@ const ENV_VALUE_RE =
 // Field names whose values are declared safe by the spec: wallet pubkey +
 // signatures pass redaction.
 const PUBLIC_FIELD_RE =
-  /^(tx_signatures|tx_signature|signature|signer_pubkey|wallet_pubkey|pubkey)$/i;
+  /^(tx_signatures|tx_signature|signature|from_signature|to_signature|signer_pubkey|wallet_pubkey|pubkey)$/i;
 
 const REDACTED = '[REDACTED]';
 
@@ -124,6 +124,10 @@ export interface ExecutorStartedLine {
   git_sha: string | null;
   rpc_read_url: string;
   rpc_write_url: string;
+  rpc_ws_url: string | null;
+  rpc_max_cu_per_second: number;
+  pool_allowlist: string[];
+  mint_allowlist: string[];
   wallet_pubkey: string;
   policy_hash: string;
   dry_run: boolean;

@@ -7,6 +7,7 @@ export function baseEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     SOLANA_RPC_URL: 'https://rpc.test',
     WALLET_SIGNER: 'kms',
+    WALLET_PUBKEY: TEST_POOL,
     KMS_KEY_ARN: 'arn:aws:kms:us-east-1:1:key/x',
     POOL_ALLOWLIST: `${TEST_POOL},${TEST_BASE_MINT}`,
     MINT_ALLOWLIST: `${TEST_BASE_MINT},${TEST_QUOTE_MINT}`,

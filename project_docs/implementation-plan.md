@@ -1,6 +1,7 @@
 # solana-clmm-executor — implementation plan
 
-Status: M0 and M1 implemented and locally verified (2026-09-10). Derived from `opms-spec.md` (spec §§ referenced inline;
+Status: M0 and M1 locally verified; M2 implemented and offline-verified, with
+the 30-minute mainnet evidence run still pending (2026-09-10). Derived from `opms-spec.md` (spec §§ referenced inline;
 source of truth for the wire contract is `src/protocol.ts`) and gated by
 `meteora-functional-test-plan.md` (test plan §§). Status ledger lives in
 `../status.md`.
@@ -28,8 +29,9 @@ spec (and `protocol.ts`) wins — fix this file.
 Exists: M0 toolchain, validated config, rotating/redacted logs, vendored read
 helpers; M1 `bridge.ts`, six dry-run stub handlers, request validation, shared
 fixtures, and a real-subprocess Python keeper lane. See `../status.md` for
-verification commands and evidence. Live read handlers and the swap stream
-remain M2/M3 work; the bridge does not load a signer.
+verification commands and evidence. M2 live read handlers are implemented;
+their mainnet evidence run and the M3 swap stream remain. The bridge does not
+load a signer.
 dlmm-bot side exists and is the verification harness: `exec_bridge.py`
 (`ExecBridge`, `FakeExecBridge`, `ReplayExecBridge`), `keeper.py`,
 `swap_observer.py` (`JsonlSwapEventSource`), and `tests/` (12 files,
@@ -102,7 +104,9 @@ one-liner. No `console.log` anywhere (lint rule: `no-console` with
 Env parsing + startup validation for spec §9:
 
 ```
-SOLANA_RPC_URL, SOLANA_RPC_WRITE_URL (default = read), SOLANA_COMMITMENT (confirmed)
+SOLANA_RPC_URL, SOLANA_RPC_WRITE_URL (default = read), SOLANA_WS_URL (optional;
+explicit subscription endpoint), SOLANA_COMMITMENT (confirmed)
+SOLANA_RPC_MAX_CU_PER_SECOND (default 240; Alchemy free-tier headroom)
 WALLET_SIGNER=kms|keypair, KMS_KEY_ARN | WALLET_SECRET_ARN
 POOL_ALLOWLIST, MINT_ALLOWLIST (comma-separated pubkeys)
 MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS, MAX_PRIORITY_FEE_LAMPORTS
@@ -114,6 +118,9 @@ DRY_RUN
 - Fail closed at startup if signer, RPC, or either allow-list is missing
   (spec §9). M1–M3 run with `DRY_RUN=true` and a dummy signer shape permitted
   only in dry-run.
+- All HTTP retries pass through a shared CU-aware limiter. The 240 CU/s
+  default stays below Alchemy's 300 CU/s free-tier throughput and prevents
+  reconnect backfills from creating an unmetered retry burst.
 - Export `policyHash(): string` — sha256 of the normalized policy-relevant
   config; feeds `executor_started.policy_hash` (spec §7, §9).
 
@@ -191,7 +198,7 @@ chain code exists.
 typecheck/lint/tests, then the full Python suite with `--executor-subprocess`.
 All twelve existing keeper cases run against both bridges. Three additional
 cases exercise all six verbs, child restart, and a receipt-bearing keeper
-lifecycle through `node dist/bridge.js`. Twelve shared envelopes are checked
+lifecycle through the built bridge with explicit stub injection. Twelve shared envelopes are checked
 on both sides. The first error-fixture slice is malformed requests;
 broader error coverage and all-four-bridge replay remain cross-cutting work.
 
@@ -240,8 +247,9 @@ broader error coverage and all-four-bridge replay remain cross-cutting work.
   run in CI after build.
 - Implemented as marker `executor_subprocess`, flag `--executor-subprocess`,
   and fixture `real_subprocess_bridge`. Existing tests inject read scenarios
-  through a test-only runner importing the built bridge; the production CLI
-  has no test flags or extra verbs. Separate cases launch the CLI directly.
+  through test-only runners importing the built bridge; the production CLI
+  has no test flags or extra verbs. From M2 onward, production always wires
+  live reads and offline contract cases use `fixtures/stub-runner.mjs`.
 - **Acceptance (gate 1):** keeper suite green through the real subprocess;
   fixture parse test green on the Python side. Record in `status.md`.
 
@@ -252,6 +260,13 @@ broader error coverage and all-four-bridge replay remain cross-cutting work.
 **Goal:** live `get_state` + `get_position` against mainnet, read-only, keeper
 in `dry_run`.
 **Depends on:** M1. **Effort:** M. **Writes on-chain:** no.
+
+**Implemented and offline-verified 2026-09-10. Live gate pending.** The pinned
+SDK exposes `getPosition`, not the planned `getPositionByAddress`; the executor
+first validates the position account's program/discriminator/pool/owner header,
+then calls `getPosition` on the cached pool instance. This avoids a full wallet
+position scan. Production M2 requires `WALLET_PUBKEY` while signer loading
+remains deliberately deferred to M4.
 
 ### T2.1 `src/meteora.ts` — connection + pool cache
 
@@ -313,11 +328,37 @@ in `dry_run`.
 **Writes on-chain:** no. **Ships before any signing exists** — without it the
 keeper has no verified fills and `verify_log.py` fails closed (spec §6).
 
+**Implemented 2026-09-10; offline + cross-language gate passed.** Live tail
+pending. Implementation notes: the DLMM IDL (v0.9.0) declares `events` without
+matching `types` entries or discriminators, so Anchor 0.30's `BorshEventCoder`
+cannot be built from it directly — `src/events.ts` constructs one coder per
+event from the IDL's own field list with `publicKey` remapped to `pubkey`.
+`fee_bps` is derived from `fee / amountIn` because the event's `feeBps` u128
+scale is undocumented and unverified. `bins_crossed` is deliberately **not**
+emitted: the shipped `Swap` event carries only aggregate in/out and fee, so any
+per-bin split would be fabricated, and a wrong split is worse than none for
+`verify_log.py` §6.2 — the observer derives the crossed range itself from
+`prev`/`new_active_bin`. The replay gate decodes the recorded event fixture
+through the compiled TypeScript stream, tails the exact file from Python, emits
+`observed_trade` / `bin_fill`, and passes `verify_log.py` completeness against
+the fixture swap set. See `status.md` for evidence; a live busy-pool soak
+remains pending.
+
+`src/socketTeardown.ts` exists because `removeOnLogsListener` alone does not
+release a `Connection`: the client reconnects its socket implicitly and the
+resulting timers pin the event loop, so the executor would never exit on stdin
+EOF and `ExecBridge` would never see the restart it relies on (spec §2). It
+reaches into `Connection`/`ws` internals — a deliberate, contained, fail-open
+liability — with `bridge.ts`'s explicit exit as the backstop.
+
 ### T3.1 `src/swapStream.ts` — subscription
 
-- `connection.onLogs(DLMM_PROGRAM_ID, {commitment: 'confirmed'})` filtered to
-  configured pools (spec §6: runs whether or not we hold a position —
-  `crossed_ours` is the observer's call).
+- One `connection.onLogs(pool, {commitment: 'confirmed'})` mentions
+  subscription per configured pool (spec §6: runs whether or not we hold a
+  position — `crossed_ours` is the observer's call). Current Meteora events are
+  event-CPI inner instructions, so this bounds transaction-fetch load instead
+  of fetching every DLMM swap globally; decoded events are still validated as
+  DLMM instructions and filtered by their `lbPair`.
 - Decode swap events from the DLMM program's anchor IDL
   (`@meteora-ag/dlmm` ships the IDL; event discriminator + `swapBaseInput` /
   `swapActiveInAmount`-style fields). Deliverable: `prev_active_bin`,

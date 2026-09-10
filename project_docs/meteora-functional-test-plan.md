@@ -323,15 +323,10 @@ sudo chmod 0400 /etc/clmm-executor/wallet.json
 The key is only as protected as the host, so these are requirements and not
 suggestions:
 
-- **Full-disk encryption** (LUKS or equivalent). A stolen or RMA'd disk must
-  not be a stolen wallet.
-- **No swap, or encrypted swap.** Unencrypted swap can write the key to disk
-  where the file permissions no longer apply.
-- **Core dumps disabled** for the process (`LimitCORE=0`). A core file contains
-  the key in plaintext and is typically world-readable.
-- **Excluded from backups**, or backed up only as an offline encrypted copy
-  held separately from the host. Losing the file loses the wallet: there is no
-  recovery path and no provider to appeal to.
+- **Full-disk encryption**
+- **No swap, or encrypted swap.**
+- **Core dumps disabled** for the process (`LimitCORE=0`)
+- **Excluded from backups**
 - Systemd hardening on the unit: `ProtectSystem=strict`, `PrivateTmp=yes`,
   `NoNewPrivileges=yes`, `MemoryDenyWriteExecute=yes`.
 
@@ -355,23 +350,10 @@ suggestions:
 
 State these plainly so nobody assumes otherwise:
 
-- **No hardware protection.** Root, and anyone who can read the file or attach
-  a debugger to the process, has the key. Arm A's core property — that the
-  private key is not extractable — does not exist here.
-- **No independent audit trail.** Under arm A, CloudTrail records every `Sign`
-  outside the signing process. Here the only record is the executor's own JSONL
-  log, which a compromised executor could forge. Compensate by shipping logs
-  off-box to append-only storage as they are written.
-- **No remote kill switch.** The arm A equivalent is a single API call that
-  works even if the host is unreachable. Here it is: stop the service, then
-  drain the wallet — both of which need the host to be reachable and healthy.
-  Keep a rehearsed, documented drain procedure and a second machine able to run
-  it.
-- **No capability partition.** The keeper runs as the same user and can read
-  the same file (§2). File permissions could enforce that boundary, but only if
-  the executor runs as its own service user and the keeper reaches it over a
-  socket instead of being its parent process — that is the phase-2 transport,
-  and it is the natural upgrade path for this arm.
+- **No hardware protection.**
+- **No independent audit trail.**
+- **No remote kill switch.**
+- **No capability partition.**
 
 #### Compensating controls
 
@@ -478,6 +460,8 @@ The subprocess uses the configuration surface from `opms-spec.md` §9:
 ```text
 SOLANA_RPC_URL
 SOLANA_RPC_WRITE_URL
+SOLANA_WS_URL
+SOLANA_RPC_MAX_CU_PER_SECOND
 SOLANA_COMMITMENT
 WALLET_SIGNER
 KMS_KEY_ARN or WALLET_SECRET_ARN or WALLET_KEYPAIR_PATH

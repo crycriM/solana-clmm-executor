@@ -1,4 +1,4 @@
-/** M1 wire proof only. These handlers never contact a chain or signer. */
+/** M1 stubs plus the M2 read-only handler composition. */
 import type {
   ExecHandlers,
   ExecResponse,
@@ -7,6 +7,13 @@ import type {
   TxReceipt,
   WithdrawData,
 } from './protocol.js';
+import { errorResponse } from './protocol.js';
+import {
+  InvalidPoolError,
+  MeteoraReads,
+  RpcReadError,
+  UnknownPositionError,
+} from './meteora.js';
 
 export const STUB_POSITION = 'stub_position_001';
 export const STUB_WALLET = '11111111111111111111111111111111';
@@ -167,4 +174,43 @@ export function createStubHandlers(): ExecHandlers {
       );
     },
   };
+}
+
+function readOk<D>(data: D): ExecResponse<D> {
+  return { ok: true, data, error: null, tx_signatures: [], transactions: [] };
+}
+
+/** M2: real read verbs with the still-gated M1 write stubs. */
+export function createReadHandlers(reads: MeteoraReads): ExecHandlers {
+  const handlers = createStubHandlers();
+  handlers.get_state = async (req) => {
+    try {
+      return readOk(await reads.getState(req.pool));
+    } catch (error) {
+      if (error instanceof InvalidPoolError) {
+        return errorResponse('bad_request', 'Pool is not allow-listed') as ExecResponse<StateData>;
+      }
+      if (error instanceof RpcReadError) {
+        return errorResponse('rpc_timeout', 'RPC read failed') as ExecResponse<StateData>;
+      }
+      throw error;
+    }
+  };
+  handlers.get_position = async (req) => {
+    try {
+      return readOk(await reads.getPosition(req.position_id));
+    } catch (error) {
+      if (error instanceof UnknownPositionError) {
+        return errorResponse(
+          'unknown_position',
+          'Position does not exist or is not owned by the wallet',
+        ) as ExecResponse<PositionData>;
+      }
+      if (error instanceof RpcReadError) {
+        return errorResponse('rpc_timeout', 'RPC read failed') as ExecResponse<PositionData>;
+      }
+      throw error;
+    }
+  };
+  return handlers;
 }

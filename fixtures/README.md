@@ -15,3 +15,15 @@ TypeScript tests compare all twelve envelopes through the bridge. Python's
 `tests/test_executor_fixtures.py` in `dlmm-bot` parses these same files through
 `ExecResult.from_payload`. Further errors and replay through Fake, Replay,
 and Gateway bridges belong to the later full spec §11 conformance gate.
+
+`rpc/` contains sanitized, deterministic shapes captured from the M2 Solana
+RPC/Meteora read surfaces. They deliberately include raw values above 2^53 and
+contain no endpoint credentials, wallet secrets, or signed transactions.
+`rpc/dlmm-swap-logs.json` is the M3 event-payload replay fixture.
+
+`swap-stream-dump.mjs` decodes that fixture through the compiled production
+stream and writes the exact JSONL file consumed by the Python integration gate.
+It performs no network access.
+
+`stub-runner.mjs` is the explicit offline process entrypoint. The production
+`dist/bridge.js` never auto-selects stubs and always wires the live M2 reads.

@@ -441,15 +441,22 @@ never downgrade to "sign anyway". There is no arbitrary-transaction endpoint.
 Env-driven, validated at startup, hashed into `executor_started.policy_hash`:
 
 ```
-SOLANA_RPC_URL, SOLANA_RPC_WRITE_URL, SOLANA_COMMITMENT=confirmed
+SOLANA_RPC_URL, SOLANA_RPC_WRITE_URL, SOLANA_WS_URL (optional explicit
+subscription endpoint), SOLANA_COMMITMENT=confirmed
+SOLANA_RPC_MAX_CU_PER_SECOND=240
 WALLET_SIGNER=kms|keypair|file, KMS_KEY_ARN | WALLET_SECRET_ARN | WALLET_KEYPAIR_PATH
-WALLET_PUBKEY (optional pin; expected under WALLET_SIGNER=file)
+WALLET_PUBKEY (required by the M2 read-only bridge; later also pins/derives from the signer)
 POOL_ALLOWLIST, MINT_ALLOWLIST
 MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS, MAX_PRIORITY_FEE_LAMPORTS
 JITO_ENABLED, JITO_BLOCK_ENGINE_URL, JITO_TIP_LAMPORTS
 SWAP_STREAM_PATH, EXECUTOR_LOG_DIR
 DRY_RUN=true|false
 ```
+
+The HTTP client prices each JSON-RPC method in Alchemy throughput CUs and
+shares one token bucket across read/retry connections. The default reserves
+20% headroom below the 300 CU/s free-tier limit; deployments may lower it when
+other applications share the same Alchemy account.
 
 `DRY_RUN=true` builds, validates, and simulates every transaction but never
 signs; it returns a well-formed envelope with `data.dry_run:true`, synthetic
@@ -465,6 +472,11 @@ Under `file`, startup additionally fails closed if the keyfile is group- or
 world-readable, is not owned by the running user, sits in a directory looser
 than `0700`, or derives an address other than `WALLET_PUBKEY`. The arm changes
 only where the key lives; §8's transaction policy is identical under both.
+
+Until M4 wires signer resolution, M2 requires `WALLET_PUBKEY` explicitly so it
+can read wallet token balances and reject positions owned by another wallet
+without loading any signing material. Once a signer is loaded, deployments may
+derive the same public key from it; a configured `WALLET_PUBKEY` remains a pin.
 
 ## 10. Layout and build order
 

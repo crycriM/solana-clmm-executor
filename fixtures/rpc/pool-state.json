@@ -1,0 +1,25 @@
+{
+  "source": "sanitized recording shape from Solana mainnet getTokenAccountsByOwner/getTokenAccountBalance",
+  "slot": 301234567,
+  "active_bin": 8123,
+  "bin_step_bps": 25,
+  "base_fee_percent": "0.25",
+  "token_x": {
+    "mint": "So11111111111111111111111111111111111111112",
+    "decimals": 9,
+    "symbol": "SOL",
+    "coingecko_id": "solana",
+    "wallet_raw": "10000000411680503305",
+    "reserve_raw": "1250000000000",
+    "usd": 150
+  },
+  "token_y": {
+    "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "decimals": 6,
+    "symbol": "USDC",
+    "coingecko_id": "usd-coin",
+    "wallet_raw": "4200000000",
+    "reserve_raw": "187500000000",
+    "usd": 1
+  }
+}
