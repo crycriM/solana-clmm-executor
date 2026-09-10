@@ -7,7 +7,7 @@ import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { runBridge, UnrecoverableError } from './bridge.js';
 import { loadConfig } from './config.js';
-import { createStubHandlers } from './handlers.js';
+import { createStubHandlers, STUB_QUOTE_MINT } from './handlers.js';
 import type { ExecHandlers, ExecRequest, ExecResponse, Verb } from './protocol.js';
 import type { VerbLine } from './log.js';
 import { baseEnv } from './testing.js';
@@ -224,13 +224,13 @@ describe('stdio loop', () => {
   });
 });
 
-describe('compiled CLI', () => {
+describe('compiled bridge with the offline fixture entrypoint', () => {
   function cli(input: string, overrides: NodeJS.ProcessEnv = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'executor-cli-'));
     dirs.push(dir);
     const result = spawnSync(
       process.execPath,
-      [fileURLToPath(new URL('../dist/bridge.js', import.meta.url))],
+      [fileURLToPath(new URL('../fixtures/stub-runner.mjs', import.meta.url))],
       {
         input,
         encoding: 'utf8',
@@ -278,5 +278,37 @@ describe('compiled CLI', () => {
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     expect(result.stderr).not.toBe('');
+  });
+
+  it('production entrypoint wires M2 reads instead of silently selecting stubs', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'executor-m2-cli-'));
+    dirs.push(dir);
+    const request = { method: 'get_state', pool: STUB_QUOTE_MINT };
+    const result = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('../dist/bridge.js', import.meta.url))],
+      {
+        input: JSON.stringify(request) + '\n',
+        encoding: 'utf8',
+        timeout: 10000,
+        env: {
+          ...process.env,
+          ...baseEnv({ DRY_RUN: 'true', EXECUTOR_LOG_DIR: dir }),
+        },
+      },
+    );
+    expect(result.status).toBe(0);
+    const response = JSON.parse(result.stdout.trim()) as ExecResponse;
+    expect(response).toMatchObject({ ok: false, error: 'bad_request' });
+    const records = fs
+      .readFileSync(
+        path.join(dir, fs.readdirSync(dir).find((file) => file.endsWith('.jsonl'))!),
+        'utf8',
+      )
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    expect(records[0].run_counter_note).toContain('M3: live reads');
+    expect(records[1]).toMatchObject({ policy_decision: 'read_only' });
   });
 });

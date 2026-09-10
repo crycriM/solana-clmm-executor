@@ -40,6 +40,7 @@ describe('config fail-closed', () => {
     ['MINT_ALLOWLIST', 'not-a-public-key'],
     ['SOLANA_RPC_URL', 'file:///tmp/rpc'],
     ['SOLANA_RPC_WRITE_URL', 'no-url'],
+    ['SOLANA_WS_URL', 'https://not-a-websocket.test'],
     ['SOLANA_COMMITMENT', 'processed'],
     ['SOLANA_COMMITMENT', 'oops'],
     ['DRY_RUN', 'TRUE'],
@@ -49,6 +50,7 @@ describe('config fail-closed', () => {
     ['MAX_SOL_PER_RUN', 'NaN'],
     ['MAX_SLIPPAGE_BPS', '10001'],
     ['MAX_PRIORITY_FEE_LAMPORTS', '9007199254740992'],
+    ['SOLANA_RPC_MAX_CU_PER_SECOND', '0'],
     ['JITO_TIP_LAMPORTS', '-1'],
   ])('rejects invalid %s', (key, value) => {
     expect(() => loadConfig(baseEnv({ [key]: value }))).toThrow(key);
@@ -118,6 +120,18 @@ describe('policyHash', () => {
   it('default config smoke load', () => {
     const cfg: ExecutorConfig = loadConfig(baseEnv());
     expect(cfg.rpcWriteUrl).toBe(cfg.rpcReadUrl);
+    expect(cfg.rpcWsUrl).toBeNull();
+    expect(cfg.rpcMaxCuPerSecond).toBe(240);
     expect(cfg.commitment).toBe('confirmed');
+  });
+
+  it('allows a lower explicit RPC throughput budget', () => {
+    expect(loadConfig(baseEnv({ SOLANA_RPC_MAX_CU_PER_SECOND: '120' })).rpcMaxCuPerSecond)
+      .toBe(120);
+  });
+
+  it('accepts an explicit secure websocket endpoint', () => {
+    const cfg = loadConfig(baseEnv({ SOLANA_WS_URL: 'wss://rpc.example/ws/key' }));
+    expect(cfg.rpcWsUrl).toBe('wss://rpc.example/ws/key');
   });
 });

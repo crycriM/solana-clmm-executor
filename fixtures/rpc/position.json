@@ -1,0 +1,29 @@
+{
+  "source": "sanitized recording shape from Meteora DLMM 1.5.0 getPosition",
+  "position_id": "9xQeWvG816bUx9EPfFtyFLM94Nma5N6QwLwzYwR8Wc2t",
+  "active_bin": 8123,
+  "lower_bin_id": 8120,
+  "upper_bin_id": 8125,
+  "total_x_raw": "10000000411680503305",
+  "total_y_raw": "250000000",
+  "fee_x_raw": "9007199254740993",
+  "fee_y_raw": "1840000",
+  "bins": [
+    {
+      "bin_id": 8120,
+      "price_per_token": "149.5",
+      "x_raw": "10000000411680503305.9",
+      "y_raw": "0",
+      "bin_liquidity": "1000000",
+      "position_liquidity": "14200"
+    },
+    {
+      "bin_id": 8125,
+      "price_per_token": "151.1",
+      "x_raw": "0",
+      "y_raw": "250000000",
+      "bin_liquidity": "500000",
+      "position_liquidity": "10000"
+    }
+  ]
+}

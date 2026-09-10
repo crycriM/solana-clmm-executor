@@ -39,8 +39,8 @@ describe('§9 fail-closed startup', () => {
     expect(result.stderr.trim()).not.toBe('');
   });
 
-  it('rejects DRY_RUN=false while the M1 stub handlers are wired', () => {
-    // The stub is a dry-run-only body; a live signer is gated separately.
+  it('rejects DRY_RUN=false before the M4 write handlers are wired', () => {
+    // M2 is read-only; a live signer is gated separately.
     const result = run({ DRY_RUN: 'false', LIVE_WRITE_CONFIRM: 'yes', LIVE_RUN_ID: 'test' });
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');

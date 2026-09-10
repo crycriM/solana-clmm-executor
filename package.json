@@ -14,9 +14,13 @@
     "dev": "tsx src/bridge.ts",
     "test": "vitest run",
     "test:m1": "vitest run src/",
+    "test:m2": "vitest run",
+    "test:m3": "vitest run",
     "test:live": "RUN_LIVE=1 vitest run tests/functional",
     "lint": "eslint src/",
-    "check:m1": "npm run build && npm run typecheck && npm run lint && npm run test:m1 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess"
+    "check:m1": "npm run build && npm run typecheck && npm run lint && npm run test:m1 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess",
+    "check:m2": "npm run build && npm run typecheck && npm run lint && npm run test:m2 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess",
+    "check:m3": "npm run build && npm run typecheck && npm run lint && npm run test:m3 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1129.0",

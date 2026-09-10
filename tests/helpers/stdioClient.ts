@@ -17,9 +17,20 @@ import type { ExecRequest, ExecResponse } from '../../src/protocol.js';
 import { baseEnv } from '../../src/testing.js';
 
 export const BRIDGE_PATH = fileURLToPath(new URL('../../dist/bridge.js', import.meta.url));
+export const STUB_BRIDGE_PATH = fileURLToPath(
+  new URL('../../fixtures/stub-runner.mjs', import.meta.url),
+);
 
 /** Offline suites still need the compiled CLI; fail with a fixable message. */
 export function requireBuiltBridge(): string {
+  if (!fs.existsSync(BRIDGE_PATH)) {
+    throw new Error('dist/bridge.js is missing — run `npm run build` before the harness');
+  }
+  return STUB_BRIDGE_PATH;
+}
+
+/** The production entrypoint, used only by opt-in live-chain suites. */
+export function requireProductionBridge(): string {
   if (!fs.existsSync(BRIDGE_PATH)) {
     throw new Error('dist/bridge.js is missing — run `npm run build` before the harness');
   }
@@ -217,6 +228,11 @@ export interface ExecutorAuditLine {
   wallet_pubkey?: string;
   policy_hash?: string;
   dry_run?: boolean;
+  rpc_read_url?: string;
+  rpc_write_url?: string;
+  rpc_ws_url?: string | null;
+  pool_allowlist?: string[];
+  mint_allowlist?: string[];
 }
 
 /** All JSONL audit records from the run, in write order. */
@@ -238,7 +254,15 @@ export interface RunArtifact {
   generated_at: string;
   gateway: { node_version: string | null; git_sha: string | null; dry_run: boolean | null };
   connector: { dlmm_sdk_version: string | null };
-  network: { rpc_read_url: string | null; rpc_write_url: string | null; wallet_pubkey: string | null; policy_hash: string | null };
+  network: {
+    rpc_read_url: string | null;
+    rpc_write_url: string | null;
+    rpc_ws_url: string | null;
+    wallet_pubkey: string | null;
+    policy_hash: string | null;
+    pools: string[];
+    mints: string[];
+  };
   exchanges: { request: unknown; response: unknown }[];
   req_seqs: number[];
   tx_signatures: string[];
@@ -246,6 +270,7 @@ export interface RunArtifact {
   before_after: Record<string, { before: unknown; after: unknown }>;
   decisions: string[];
   cleanup: { operations: string[]; final_status: 'clean' | 'failed' | 'not_started' };
+  evidence_files: string[];
 }
 
 /**
@@ -263,7 +288,15 @@ export class RunRecorder {
       generated_at: '',
       gateway: { node_version: null, git_sha: null, dry_run: null },
       connector: { dlmm_sdk_version: null },
-      network: { rpc_read_url: null, rpc_write_url: null, wallet_pubkey: null, policy_hash: null },
+      network: {
+        rpc_read_url: null,
+        rpc_write_url: null,
+        rpc_ws_url: null,
+        wallet_pubkey: null,
+        policy_hash: null,
+        pools: [],
+        mints: [],
+      },
       exchanges: [],
       req_seqs: [],
       tx_signatures: [],
@@ -271,6 +304,7 @@ export class RunRecorder {
       before_after: {},
       decisions: [],
       cleanup: { operations: [], final_status: 'not_started' },
+      evidence_files: [],
     };
   }
 
@@ -285,10 +319,14 @@ export class RunRecorder {
     };
     this.artifact.connector.dlmm_sdk_version = started.dlmm_sdk_version ?? null;
     this.artifact.network = {
-      rpc_read_url: null,
-      rpc_write_url: null,
+      // Executor logging redacts credential-bearing URLs to provider origins.
+      rpc_read_url: started.rpc_read_url ?? null,
+      rpc_write_url: started.rpc_write_url ?? null,
+      rpc_ws_url: started.rpc_ws_url ?? null,
       wallet_pubkey: started.wallet_pubkey ?? null,
       policy_hash: started.policy_hash ?? null,
+      pools: started.pool_allowlist ?? [],
+      mints: started.mint_allowlist ?? [],
     };
   }
 
@@ -322,6 +360,10 @@ export class RunRecorder {
 
   cleanupOperation(operation: string): void {
     this.artifact.cleanup.operations.push(operation);
+  }
+
+  evidenceFile(file: string): void {
+    this.artifact.evidence_files.push(file);
   }
 
   finish(status: RunArtifact['cleanup']['final_status']): void {
