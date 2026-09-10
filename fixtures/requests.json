@@ -1,0 +1,61 @@
+{
+  "get_state": {
+    "method": "get_state",
+    "pool": "11111111111111111111111111111111"
+  },
+  "get_position": {
+    "method": "get_position",
+    "position_id": "stub_position_001"
+  },
+  "deposit_single_sided": {
+    "method": "deposit_single_sided",
+    "pool": "11111111111111111111111111111111",
+    "side": "bid",
+    "bin_ids": [
+      98,
+      99
+    ],
+    "amounts": [
+      75,
+      75
+    ],
+    "strategy_type": "Spot"
+  },
+  "withdraw": {
+    "method": "withdraw",
+    "position_id": "stub_position_001",
+    "bps": 100
+  },
+  "swap": {
+    "method": "swap",
+    "in_mint": "So11111111111111111111111111111111111111112",
+    "out_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "amount": 1,
+    "max_slippage_bps": 50,
+    "pool": null
+  },
+  "refresh_bundle": {
+    "method": "refresh_bundle",
+    "withdraw_position_id": "stub_position_001",
+    "swap_spec": null,
+    "deposit_spec": {
+      "pool": "11111111111111111111111111111111",
+      "bid_bins": [
+        98,
+        99
+      ],
+      "ask_bins": [
+        101,
+        102
+      ],
+      "bid_amounts": [
+        75,
+        75
+      ],
+      "ask_amounts": [
+        0.5,
+        0.5
+      ]
+    }
+  }
+}

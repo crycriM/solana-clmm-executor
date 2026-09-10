@@ -1,0 +1,42 @@
+{
+  "ok": true,
+  "data": {
+    "position_id": "stub_position_001",
+    "pool": "11111111111111111111111111111111",
+    "owner": "11111111111111111111111111111111",
+    "active_bin": 100,
+    "min_bin_id": 98,
+    "max_bin_id": 102,
+    "bins": [
+      {
+        "bin_id": 98,
+        "bin_price": 149,
+        "amount_base": 0,
+        "amount_quote": 150,
+        "amount_base_raw": "0",
+        "amount_quote_raw": "150000000",
+        "liquidity_share": 0.01
+      },
+      {
+        "bin_id": 102,
+        "bin_price": 151,
+        "amount_base": 1,
+        "amount_quote": 0,
+        "amount_base_raw": "1000000000",
+        "amount_quote_raw": "0",
+        "liquidity_share": 0.01
+      }
+    ],
+    "claimable_fee_x": 0.003,
+    "claimable_fee_y": 1.84,
+    "claimable_fee_x_raw": "3000000",
+    "claimable_fee_y_raw": "1840000",
+    "total_base": 1,
+    "total_quote": 150,
+    "slot": 301234567,
+    "dry_run": true
+  },
+  "error": null,
+  "tx_signatures": [],
+  "transactions": []
+}

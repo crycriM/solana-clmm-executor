@@ -1,0 +1,45 @@
+{
+  "name": "solana-clmm-executor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Signing authority + Meteora DLMM execution body for the dlmm-bot keeper (OPMS seam).",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/bridge.js",
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "dev": "tsx src/bridge.ts",
+    "test": "vitest run",
+    "test:m1": "vitest run src/",
+    "test:live": "RUN_LIVE=1 vitest run tests/functional",
+    "lint": "eslint src/",
+    "check:m1": "npm run build && npm run typecheck && npm run lint && npm run test:m1 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "3.1129.0",
+    "@coral-xyz/anchor": "0.30.1",
+    "@meteora-ag/dlmm": "1.5.0",
+    "@solana/web3.js": "1.98.2",
+    "axios": "1.7.7",
+    "bn.js": "5.2.1",
+    "decimal.js": "10.4.3",
+    "logform": "2.7.0",
+    "winston": "3.15.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.14.0",
+    "@types/bn.js": "5.1.6",
+    "@types/node": "22.7.5",
+    "@types/winston": "2.4.4",
+    "eslint": "9.14.0",
+    "eslint-config-prettier": "9.1.0",
+    "prettier": "3.3.3",
+    "tsx": "4.19.2",
+    "typescript": "5.5.4",
+    "typescript-eslint": "8.13.0",
+    "vitest": "2.1.5"
+  }
+}

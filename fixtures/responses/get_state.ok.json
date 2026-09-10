@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "data": {
+    "active_bin": 100,
+    "bin_step_bps": 20,
+    "base_fee_bps": 25,
+    "balances": {
+      "base": 0,
+      "quote": 0
+    },
+    "balances_raw": {
+      "base": "0",
+      "quote": "0"
+    },
+    "tvl_usd": 50000,
+    "token_x": {
+      "mint": "So11111111111111111111111111111111111111112",
+      "decimals": 9,
+      "symbol": "SOL"
+    },
+    "token_y": {
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimals": 6,
+      "symbol": "USDC"
+    },
+    "slot": 301234567,
+    "fetched_at": 1756900001,
+    "dry_run": true
+  },
+  "error": null,
+  "tx_signatures": [],
+  "transactions": []
+}

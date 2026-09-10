@@ -1,0 +1,26 @@
+{
+  "ok": true,
+  "data": {
+    "amount_in": 1,
+    "amount_out": 150,
+    "amount_in_raw": "1000000000",
+    "amount_out_raw": "150000000",
+    "price_realized": 150,
+    "route": "jupiter",
+    "dry_run": true
+  },
+  "error": null,
+  "tx_signatures": [
+    "dryrun_stub_swap"
+  ],
+  "transactions": [
+    {
+      "signature": "dryrun_stub_swap",
+      "slot": 301234567,
+      "block_time": 1756900001,
+      "fee_lamports": 5000,
+      "compute_unit_price": 0,
+      "status": "confirmed"
+    }
+  ]
+}

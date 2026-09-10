@@ -1,0 +1,44 @@
+{
+  "ok": true,
+  "data": {
+    "position_id": "stub_position_001",
+    "stage": "deposited",
+    "fees_claimed": {
+      "x": 0.003,
+      "y": 1.84,
+      "x_raw": "3000000",
+      "y_raw": "1840000"
+    },
+    "amounts_returned": {
+      "base": 1,
+      "quote": 150,
+      "base_raw": "1000000000",
+      "quote_raw": "150000000"
+    },
+    "dry_run": true
+  },
+  "error": null,
+  "tx_signatures": [
+    "dryrun_stub_withdraw",
+    "dryrun_stub_deposit_single_sided"
+  ],
+  "transactions": [
+    {
+      "signature": "dryrun_stub_withdraw",
+      "slot": 301234567,
+      "block_time": 1756900001,
+      "fee_lamports": 5000,
+      "compute_unit_price": 0,
+      "status": "finalized"
+    },
+    {
+      "signature": "dryrun_stub_deposit_single_sided",
+      "slot": 301234567,
+      "block_time": 1756900001,
+      "fee_lamports": 5000,
+      "compute_unit_price": 0,
+      "status": "confirmed"
+    }
+  ],
+  "position_id": "stub_position_001"
+}

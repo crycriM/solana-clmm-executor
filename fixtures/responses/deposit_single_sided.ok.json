@@ -1,0 +1,35 @@
+{
+  "ok": true,
+  "data": {
+    "position_id": "stub_position_001",
+    "pool": "11111111111111111111111111111111",
+    "side": "bid",
+    "bins": [
+      {
+        "bin_id": 98,
+        "amount": 75
+      },
+      {
+        "bin_id": 99,
+        "amount": 75
+      }
+    ],
+    "strategy_type": "Spot",
+    "dry_run": true
+  },
+  "error": null,
+  "tx_signatures": [
+    "dryrun_stub_deposit_single_sided"
+  ],
+  "transactions": [
+    {
+      "signature": "dryrun_stub_deposit_single_sided",
+      "slot": 301234567,
+      "block_time": 1756900001,
+      "fee_lamports": 5000,
+      "compute_unit_price": 0,
+      "status": "confirmed"
+    }
+  ],
+  "position_id": "stub_position_001"
+}
