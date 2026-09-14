@@ -15,6 +15,7 @@ import {
   requireProductionBridge,
   readExecutorLog,
   requireLiveWriteConfig,
+  liveWriteGatewayEnv,
   RunRecorder,
   scratchEnv,
   StdioClient,
@@ -24,6 +25,7 @@ import {
 export function liveRunnerInfo(): { configured: boolean; reason: string } {
   try {
     requireLiveWriteConfig();
+    liveWriteGatewayEnv();
     return { configured: true, reason: '' };
   } catch (error) {
     return { configured: false, reason: error instanceof Error ? error.message : String(error) };
@@ -55,7 +57,7 @@ export interface LiveRun {
 export function startLiveRun(runId: string): LiveRun {
   requireProductionBridge();
   requireLiveWriteConfig();
-  const scratch = scratchEnv({ DRY_RUN: 'false' });
+  const scratch = scratchEnv(liveWriteGatewayEnv());
   if (scratch.env['DRY_RUN'] !== 'false') {
     throw new Error('live run attempted without DRY_RUN=false');
   }

@@ -429,7 +429,11 @@ signing request, not after:
 - confirm the configured wallet is fee payer and the only signer;
 - validate lookup-table contents for versioned transactions;
 - cap per-transaction base amount, quote amount, SOL spend, slippage bps, and
-  priority fee; cap cumulative SOL spend per run;
+  **total** priority fee; cap cumulative SOL spend per run. For legacy/v0
+  messages, total priority fee is
+  `ceil(compute_unit_price_micro_lamports * compute_unit_limit / 1_000_000)`.
+  A nonzero CU price requires exactly one explicit CU limit, so a changing SDK
+  default cannot inflate a configured fee ceiling;
 - simulate; on `simulation_failed` return the error without signing.
 
 A rejection returns `ok:false, error:"policy_rejected"` with the failing rule in

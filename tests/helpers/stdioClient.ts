@@ -43,6 +43,7 @@ export function requireProductionBridge(): string {
 export const LIVE_COLLECTION_ENABLED = process.env['RUN_LIVE'] === '1';
 
 const SECRET_ENV_RE = /(PRIVATE_KEY|WALLET_SECRET(?!_ARN)|MNEMONIC|SEED|KMS_PLAINTEXT)/i;
+const STATIC_AWS_CREDENTIAL_RE = /^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)$/;
 
 /**
  * Hard rule (plan §5/§7): the private key or seed must never be a test
@@ -50,10 +51,53 @@ const SECRET_ENV_RE = /(PRIVATE_KEY|WALLET_SECRET(?!_ARN)|MNEMONIC|SEED|KMS_PLAI
  */
 export function assertNoSecretEnvs(env: NodeJS.ProcessEnv): void {
   for (const [key, value] of Object.entries(env)) {
-    if (SECRET_ENV_RE.test(key) && value) {
+    if ((SECRET_ENV_RE.test(key) || STATIC_AWS_CREDENTIAL_RE.test(key)) && value) {
       throw new Error(`refusing to pass secret-bearing env var to subprocess: ${key}`);
     }
   }
+}
+
+const WRITE_GATEWAY_KEYS = [
+  'SOLANA_RPC_URL', 'SOLANA_RPC_WRITE_URL', 'SOLANA_WS_URL', 'SOLANA_RPC_MAX_CU_PER_SECOND',
+  'SOLANA_COMMITMENT', 'WALLET_SIGNER', 'KMS_KEY_ARN', 'WALLET_KEYPAIR_PATH',
+  'WALLET_PUBKEY', 'FILE_SIGNER_ALLOW_MAINNET', 'POOL_ALLOWLIST', 'MINT_ALLOWLIST',
+  'MAX_SOL_PER_TX', 'MAX_SOL_PER_RUN', 'MAX_SLIPPAGE_BPS', 'MAX_PRIORITY_FEE_LAMPORTS',
+  'JITO_ENABLED', 'JITO_BLOCK_ENGINE_URL', 'JITO_TIP_LAMPORTS',
+] as const;
+
+/**
+ * Explicitly copy the safe gateway configuration for a live write campaign.
+ * `scratchEnv` has fixture defaults; writes must never inherit those defaults
+ * for a real wallet, especially not the fixture KMS ARN or pool allow-lists.
+ */
+export function liveWriteGatewayEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  assertNoSecretEnvs(env);
+  const signer = env['WALLET_SIGNER'];
+  if (signer !== 'kms' && signer !== 'file') throw new Error('WALLET_SIGNER=kms|file required');
+  for (const key of [
+    'SOLANA_RPC_URL', 'WALLET_PUBKEY', 'MAX_SOL_PER_TX', 'MAX_SOL_PER_RUN',
+    'MAX_SLIPPAGE_BPS', 'MAX_PRIORITY_FEE_LAMPORTS',
+  ]) {
+    if (!env[key]) throw new Error(`${key} required for live writes`);
+  }
+  if (signer === 'kms' && !env['KMS_KEY_ARN']) throw new Error('KMS_KEY_ARN required for kms writes');
+  if (signer === 'file' && !env['WALLET_KEYPAIR_PATH']) {
+    throw new Error('WALLET_KEYPAIR_PATH required for file writes');
+  }
+  const poolAllowlist = env['POOL_ALLOWLIST'] ?? env['LIVE_POOL'];
+  const mintAllowlist = env['MINT_ALLOWLIST'] ?? (
+    env['LIVE_BASE_MINT'] && env['LIVE_QUOTE_MINT']
+      ? `${env['LIVE_BASE_MINT']},${env['LIVE_QUOTE_MINT']}`
+      : undefined
+  );
+  if (!poolAllowlist || !mintAllowlist) throw new Error('POOL_ALLOWLIST/LIVE_POOL and mints required');
+  const picked: NodeJS.ProcessEnv = {
+    DRY_RUN: 'false', POOL_ALLOWLIST: poolAllowlist, MINT_ALLOWLIST: mintAllowlist,
+  };
+  for (const key of WRITE_GATEWAY_KEYS) {
+    if (env[key] !== undefined) picked[key] = env[key];
+  }
+  return picked;
 }
 
 export interface LiveWriteGuard {

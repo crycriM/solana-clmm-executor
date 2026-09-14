@@ -1,0 +1,77 @@
+import { createPrivateKey, sign as signEd25519 } from 'node:crypto';
+import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
+import { describe, expect, it } from 'vitest';
+import { loadConfig } from './config.js';
+import { PolicyRejected, TransactionPolicy } from './policy.js';
+import type { Signer } from './signer.js';
+import { executeLegacyTransaction, type ExecutionConnection } from './transactions.js';
+import { baseEnv } from './testing.js';
+
+const BLOCKHASH = '11111111111111111111111111111111';
+const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+
+function fixture(simulationError: unknown = null) {
+  const keypair = Keypair.generate();
+  const recipient = Keypair.generate().publicKey;
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([ED25519_PKCS8_PREFIX, keypair.secretKey.subarray(0, 32)]),
+    format: 'der', type: 'pkcs8',
+  });
+  let signCalls = 0;
+  const signer: Signer = {
+    publicKey: keypair.publicKey,
+    signerId: keypair.publicKey.toBase58(),
+    sign: async (message) => {
+      signCalls += 1;
+      return signEd25519(null, message, privateKey);
+    },
+  };
+  const calls: string[] = [];
+  const connection: ExecutionConnection = {
+    async getLatestBlockhash() { calls.push('blockhash'); return { blockhash: BLOCKHASH, lastValidBlockHeight: 7 }; },
+    async simulateTransaction() { calls.push('simulate'); return { value: { err: simulationError, logs: ['program log'] } }; },
+    async sendRawTransaction(raw) { calls.push(`send:${raw.length > 0}`); return 'signature-1'; },
+    async confirmTransaction() { calls.push('confirm'); return { value: { err: null } }; },
+    async getTransaction() { calls.push('receipt'); return { slot: 42, blockTime: 1_700_000_000, meta: { fee: 5_000 } }; },
+  };
+  const config = loadConfig(baseEnv({ WALLET_PUBKEY: keypair.publicKey.toBase58() }));
+  const policy = new TransactionPolicy(config, keypair.publicKey);
+  const tx = new Transaction({ feePayer: keypair.publicKey }).add(SystemProgram.transfer({
+    fromPubkey: keypair.publicKey, toPubkey: recipient, lamports: 1,
+  }));
+  return { tx, recipient, connection, signer, policy, calls, signCalls: () => signCalls };
+}
+
+describe('executeLegacyTransaction', () => {
+  it('enforces policy, simulates unsigned, signs once, and returns the chain receipt', async () => {
+    const f = fixture();
+    const result = await executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    });
+    expect(f.calls).toEqual(['blockhash', 'simulate', expect.stringMatching(/^send:true$/), 'confirm', 'receipt']);
+    expect(f.signCalls()).toBe(1);
+    expect(result.receipt).toMatchObject({ signature: 'signature-1', slot: 42, fee_lamports: 5_000, status: 'confirmed' });
+    expect(result.policy.messageHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('fails simulation before signing, submitting, or spending the run reservation', async () => {
+    const f = fixture({ InstructionError: [0, 'Custom'] });
+    await expect(executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    })).rejects.toMatchObject({ logs: ['program log'] });
+    expect(f.calls).toEqual(['blockhash', 'simulate']);
+    expect(f.signCalls()).toBe(0);
+  });
+
+  it('rejects policy before simulation and never asks the signer to handle it', async () => {
+    const f = fixture();
+    await expect(executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed',
+      policyInput: { writableAccounts: [], amounts: {} },
+    })).rejects.toBeInstanceOf(PolicyRejected);
+    expect(f.calls).toEqual(['blockhash']);
+    expect(f.signCalls()).toBe(0);
+  });
+});

@@ -84,11 +84,9 @@ function keySet(values: Iterable<string | PublicKey>): Set<string> {
   return new Set(Array.from(values, (key) => typeof key === 'string' ? key : key.toBase58()));
 }
 
-function exceedsPriorityFeeCap(data: Buffer, maxLamports: number): boolean {
-  // ComputeBudget::SetComputeUnitPrice = tag 3 followed by u64 LE micro-lamports.
-  if (data.length !== 9 || data[0] !== 3) return false;
-  const microLamports = data.readBigUInt64LE(1);
-  return microLamports > BigInt(maxLamports) * 1_000_000n;
+interface ComputeBudgetInstructionData {
+  program: PublicKey;
+  data: Buffer;
 }
 
 /**
@@ -155,6 +153,9 @@ export class TransactionPolicy {
     if (!tx.feePayer?.toBase58 || tx.feePayer.toBase58() !== this.wallet) {
       reject('fee_payer', 'wallet must be fee payer');
     }
+    const computeBudget = tx.instructions.map((instruction) => ({
+      program: instruction.programId, data: instruction.data,
+    }));
     for (const instruction of tx.instructions) {
       this.validateInstruction(
         instruction.programId,
@@ -166,6 +167,7 @@ export class TransactionPolicy {
     const message = tx.compileMessage();
     const signerKeys = message.accountKeys.slice(0, message.header.numRequiredSignatures);
     this.validateSigners(signerKeys);
+    this.validatePriorityFee(computeBudget);
     return Buffer.from(tx.serializeMessage()).toString('hex');
   }
 
@@ -186,6 +188,7 @@ export class TransactionPolicy {
     }
     const signerKeys = keys.staticAccountKeys.slice(0, message.header.numRequiredSignatures);
     this.validateSigners(signerKeys);
+    const computeBudget: ComputeBudgetInstructionData[] = [];
     for (const instruction of message.compiledInstructions) {
       const program = keys.get(instruction.programIdIndex);
       if (!program) reject('program_id_allowlist', 'instruction program is unresolved');
@@ -199,7 +202,9 @@ export class TransactionPolicy {
         };
       });
       this.validateInstruction(program, accountKeys, Buffer.from(instruction.data), allowedWritable);
+      computeBudget.push({ program, data: Buffer.from(instruction.data) });
     }
+    this.validatePriorityFee(computeBudget);
     return Buffer.from(message.serialize()).toString('hex');
   }
 
@@ -231,11 +236,6 @@ export class TransactionPolicy {
     if (!this.programs.has(program.toBase58())) {
       reject('program_id_allowlist', `program ${program.toBase58()} is not allowed`);
     }
-    if (program.equals(ComputeBudgetProgram.programId)) {
-      if (exceedsPriorityFeeCap(data, this.config.maxPriorityFeeLamports)) {
-        reject('priority_fee_cap', 'priority fee exceeds MAX_PRIORITY_FEE_LAMPORTS');
-      }
-    }
     for (const account of accounts) {
       if (account.isSigner && account.key.toBase58() !== this.wallet) {
         reject('only_wallet_signer', 'a non-wallet account was marked signer');
@@ -243,6 +243,38 @@ export class TransactionPolicy {
       if (account.isWritable && !allowedWritable.has(account.key.toBase58())) {
         reject('writable_account_allowlist', `unknown writable account ${account.key.toBase58()}`);
       }
+    }
+  }
+
+  /**
+   * Solana charges ceil(CU_price_micro_lamports × CU_limit / 1,000,000),
+   * not the price alone. Require a single explicit limit whenever a price is
+   * requested: without it an SDK/default-limit change could silently expand
+   * the fee. See Solana core fee structure documentation.
+   */
+  private validatePriorityFee(instructions: ComputeBudgetInstructionData[]): void {
+    let unitLimit: bigint | undefined;
+    let unitPrice: bigint | undefined;
+    for (const instruction of instructions) {
+      if (!instruction.program.equals(ComputeBudgetProgram.programId)) continue;
+      const { data } = instruction;
+      if (data.length === 5 && data[0] === 2) {
+        if (unitLimit !== undefined) reject('priority_fee_cap', 'duplicate compute unit limit');
+        unitLimit = BigInt(data.readUInt32LE(1));
+      } else if (data.length === 9 && data[0] === 3) {
+        if (unitPrice !== undefined) reject('priority_fee_cap', 'duplicate compute unit price');
+        unitPrice = data.readBigUInt64LE(1);
+      } else {
+        reject('priority_fee_cap', 'unsupported compute budget instruction');
+      }
+    }
+    if (unitPrice === undefined || unitPrice === 0n) return;
+    if (unitLimit === undefined || unitLimit === 0n) {
+      reject('priority_fee_cap', 'nonzero CU price requires an explicit nonzero CU limit');
+    }
+    const feeLamports = (unitPrice * unitLimit + 999_999n) / 1_000_000n;
+    if (feeLamports > BigInt(this.config.maxPriorityFeeLamports)) {
+      reject('priority_fee_cap', 'priority fee exceeds MAX_PRIORITY_FEE_LAMPORTS');
     }
   }
 }
