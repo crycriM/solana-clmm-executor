@@ -7,22 +7,14 @@
 
 import { createRequire } from 'node:module';
 import DecimalDefault from 'decimal.js';
-import {
-  LBCLMM_PROGRAM_IDS,
-  POSITION_V2_DISC,
-  type LbPosition,
-} from '@meteora-ag/dlmm';
-import {
-  Connection,
-  PublicKey,
-  type AccountInfo,
-  type ParsedAccountData,
-} from '@solana/web3.js';
+import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-ag/dlmm';
+import { Connection, PublicKey, type AccountInfo, type ParsedAccountData } from '@solana/web3.js';
 import type { ExecutorConfig } from './config.js';
 import type { ExecutorLine } from './log.js';
 import type { PositionData, StateData, TokenMeta } from './protocol.js';
 import { bnToDecimal, bnToRaw, withRetry } from './vendor/lp-monitor/meteoraReads.js';
 import { getSolanaConnection } from './vendor/lp-monitor/solana.js';
+import { withRpcFetchTiming, type RpcFetchTiming } from './rpcRateLimit.js';
 import {
   getTokenMapping,
   getTokenPrices,
@@ -88,6 +80,9 @@ export interface MeteoraReadDependencies {
 export interface ReadAuditContext {
   attempt: number;
   rpcEndpoint: string | null;
+  readTimingsMs?: Record<string, number>;
+  rpcCuWaitMs?: Record<string, number>;
+  rpcHttpMs?: Record<string, number>;
 }
 
 interface Endpoint {
@@ -178,6 +173,9 @@ export class MeteoraReads {
   private readonly priceTtlMs: number;
   private operationAttempt = 1;
   private operationEndpoint: string | null = null;
+  private operationTimings: Record<string, number> | null = null;
+  private operationCuWait: Record<string, number> | null = null;
+  private operationHttp: Record<string, number> | null = null;
 
   constructor(
     private readonly config: ExecutorConfig,
@@ -207,10 +205,7 @@ export class MeteoraReads {
   private configuredConnections(): ReadConnection[] {
     const read = getSolanaConnection(this.config) as unknown as ReadConnection;
     if (this.config.rpcWriteUrl === this.config.rpcReadUrl) return [read];
-    return [
-      read,
-      getSolanaConnection(this.config, { write: true }) as unknown as ReadConnection,
-    ];
+    return [read, getSolanaConnection(this.config, { write: true }) as unknown as ReadConnection];
   }
 
   private async rpc<T>(operation: (endpoint: Endpoint) => Promise<T>): Promise<T> {
@@ -249,7 +244,13 @@ export class MeteoraReads {
 
   /** Metadata for bridge.ts's one-line-per-verb operational record. */
   auditContext(): ReadAuditContext {
-    return { attempt: this.operationAttempt, rpcEndpoint: this.operationEndpoint };
+    return {
+      attempt: this.operationAttempt,
+      rpcEndpoint: this.operationEndpoint,
+      ...(this.operationTimings === null ? {} : { readTimingsMs: this.operationTimings }),
+      ...(this.operationCuWait === null ? {} : { rpcCuWaitMs: this.operationCuWait }),
+      ...(this.operationHttp === null ? {} : { rpcHttpMs: this.operationHttp }),
+    };
   }
 
   /**
@@ -270,9 +271,7 @@ export class MeteoraReads {
   }
 
   /** Load immutable metadata before the swap stream can emit its first row. */
-  async ensurePoolDecimals(
-    poolAddress: string,
-  ): Promise<{ base: number; quote: number }> {
+  async ensurePoolDecimals(poolAddress: string): Promise<{ base: number; quote: number }> {
     if (!this.config.poolAllowlist.includes(poolAddress)) {
       throw new InvalidPoolError('Pool is not allow-listed');
     }
@@ -285,6 +284,9 @@ export class MeteoraReads {
   private beginOperation(): void {
     this.operationAttempt = 1;
     this.operationEndpoint = null;
+    this.operationTimings = null;
+    this.operationCuWait = null;
+    this.operationHttp = null;
   }
 
   private async pool(endpoint: Endpoint, poolAddress: string): Promise<PoolCacheEntry> {
@@ -363,7 +365,8 @@ export class MeteoraReads {
     address: PublicKey,
   ): Promise<{ raw: string; slot: number }> {
     const response = await endpoint.connection.getTokenAccountBalance(address);
-    if (!/^\d+$/.test(response.value.amount)) throw new Error('RPC returned invalid reserve amount');
+    if (!/^\d+$/.test(response.value.amount))
+      throw new Error('RPC returned invalid reserve amount');
     return { raw: response.value.amount, slot: response.context.slot };
   }
 
@@ -390,15 +393,31 @@ export class MeteoraReads {
       const entry = await this.pool(endpoint, poolAddress);
       const pool = this.reader(entry, endpoint);
       const { metadata } = entry;
-      const [active, walletX, walletY, reserveX, reserveY, slot, prices] = await Promise.all([
-        pool.getActiveBin(),
-        this.walletBalance(endpoint, metadata.tokenX),
-        this.walletBalance(endpoint, metadata.tokenY),
-        this.reserveBalance(endpoint, metadata.reserveX),
-        this.reserveBalance(endpoint, metadata.reserveY),
-        endpoint.connection.getSlot(),
-        this.poolPrices(metadata),
+      const timings: Record<string, number> = {};
+      const cuWait: Record<string, number> = {};
+      const http: Record<string, number> = {};
+      const measure = async <T>(name: string, read: () => Promise<T>): Promise<T> => {
+        const started = performance.now();
+        const rpc: RpcFetchTiming = { cuWaitMs: 0, httpMs: 0, requests: 0 };
+        try {
+          return await withRpcFetchTiming(rpc, read);
+        } finally {
+          timings[name] = Math.round(performance.now() - started);
+          cuWait[name] = Math.round(rpc.cuWaitMs);
+          http[name] = Math.round(rpc.httpMs);
+        }
+      };
+      const [active, walletX, walletY, reserveX, reserveY, prices] = await Promise.all([
+        measure('active_bin', () => pool.getActiveBin()),
+        measure('wallet_base', () => this.walletBalance(endpoint, metadata.tokenX)),
+        measure('wallet_quote', () => this.walletBalance(endpoint, metadata.tokenY)),
+        measure('reserve_base', () => this.reserveBalance(endpoint, metadata.reserveX)),
+        measure('reserve_quote', () => this.reserveBalance(endpoint, metadata.reserveY)),
+        measure('prices', () => this.poolPrices(metadata)),
       ]);
+      this.operationTimings = timings;
+      this.operationCuWait = cuWait;
+      this.operationHttp = http;
       const xPrice = prices.get(metadata.mappingX.coingeckoId);
       const yPrice = prices.get(metadata.mappingY.coingeckoId);
       const tvlUsd =
@@ -418,7 +437,9 @@ export class MeteoraReads {
         tvl_usd: tvlUsd,
         token_x: metadata.tokenX,
         token_y: metadata.tokenY,
-        slot: Math.max(slot, walletX.slot, walletY.slot, reserveX.slot, reserveY.slot),
+        // Every balance RPC carries a context slot. A separate getSlot call
+        // adds latency/CU and can race ahead of the state we actually read.
+        slot: Math.max(walletX.slot, walletY.slot, reserveX.slot, reserveY.slot),
         fetched_at: this.now() / 1000,
       };
     });

@@ -293,7 +293,13 @@ describe('compiled bridge with the offline fixture entrypoint', () => {
         timeout: 10000,
         env: {
           ...process.env,
-          ...baseEnv({ DRY_RUN: 'true', EXECUTOR_LOG_DIR: dir }),
+          ...baseEnv({
+            DRY_RUN: 'true',
+            EXECUTOR_LOG_DIR: dir,
+            // Metadata warm-up must fail promptly without external DNS/RPC.
+            SOLANA_RPC_URL: 'http://127.0.0.1:1',
+            SOLANA_RPC_WRITE_URL: 'http://127.0.0.1:1',
+          }),
         },
       },
     );

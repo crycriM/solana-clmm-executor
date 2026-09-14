@@ -1,15 +1,25 @@
 /**
  * Bootstrap for opt-in live functional suites (plan §7, §10).
  *
- * Live runs drive `dist/bridge.js` with DRY_RUN=false + LIVE_WRITE_CONFIRM=yes
- * + LIVE_RUN_ID, record a §7 artifact, and always run cleanup. Collection is
- * already gated by vitest.config.ts (RUN_LIVE=1); if the runner configuration
- * is incomplete the suites skip instead of activating a campaign.
+ * Live runs drive `dist/bridge.js`, record a §7 artifact, and always run
+ * cleanup. Write runs additionally require DRY_RUN=false +
+ * LIVE_WRITE_CONFIRM=yes + LIVE_RUN_ID; M2 read runs remain dry-run.
+ * Collection is already gated by vitest.config.ts (RUN_LIVE=1); if the runner
+ * configuration is incomplete the suites skip instead of activating a
+ * campaign.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { requireProductionBridge, readExecutorLog, requireLiveWriteConfig, RunRecorder, scratchEnv, StdioClient, type ScratchEnv } from '../helpers/stdioClient.js';
+import {
+  requireProductionBridge,
+  readExecutorLog,
+  requireLiveWriteConfig,
+  RunRecorder,
+  scratchEnv,
+  StdioClient,
+  type ScratchEnv,
+} from '../helpers/stdioClient.js';
 
 export function liveRunnerInfo(): { configured: boolean; reason: string } {
   try {
@@ -68,6 +78,9 @@ export function startLiveReadRun(runId: string): LiveRun {
     SOLANA_RPC_URL: readUrl,
     SOLANA_RPC_WRITE_URL: process.env['SOLANA_RPC_WRITE_URL'] ?? readUrl,
     ...(process.env['SOLANA_WS_URL'] ? { SOLANA_WS_URL: process.env['SOLANA_WS_URL'] } : {}),
+    ...(process.env['SOLANA_RPC_MAX_CU_PER_SECOND']
+      ? { SOLANA_RPC_MAX_CU_PER_SECOND: process.env['SOLANA_RPC_MAX_CU_PER_SECOND'] }
+      : {}),
     SOLANA_COMMITMENT: process.env['SOLANA_COMMITMENT'] ?? 'confirmed',
     WALLET_PUBKEY: process.env['WALLET_PUBKEY']!,
     POOL_ALLOWLIST: process.env['POOL_ALLOWLIST'] ?? pool,
@@ -83,7 +96,10 @@ export function startLiveReadRun(runId: string): LiveRun {
 }
 
 /** Close the run: audit ingest, cleanup status, artifact write, exit. */
-export async function finishLiveRun(run: LiveRun, cleanupStatus: 'clean' | 'failed'): Promise<string> {
+export async function finishLiveRun(
+  run: LiveRun,
+  cleanupStatus: 'clean' | 'failed',
+): Promise<string> {
   const dir = process.env['TEST_ARTIFACT_DIR'] ?? 'logs/test-artifacts';
   await run.client.close();
   const audit = readExecutorLog(run.scratch.logDir);

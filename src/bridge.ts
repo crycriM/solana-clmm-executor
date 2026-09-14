@@ -16,7 +16,7 @@ import {
 } from './log.js';
 import { errorResponse, type ExecHandlers, type ExecResponse } from './protocol.js';
 import { BadRequest, dispatch, parseRequest } from './requests.js';
-import { MeteoraReads } from './meteora.js';
+import { MeteoraReads, type ReadAuditContext } from './meteora.js';
 import { JsonlWriter } from './jsonl.js';
 import { SwapStream } from './swapStream.js';
 import { getSolanaConnection } from './vendor/lp-monitor/solana.js';
@@ -40,7 +40,7 @@ export interface BridgeOptions {
   output?: Writable;
   reportError?: (detail: string) => void;
   handlerMode?: 'stub' | 'm2';
-  readAuditContext?: () => { attempt: number; rpcEndpoint: string | null };
+  readAuditContext?: () => ReadAuditContext;
   /**
    * Swap stream lifecycle. `start` is awaited after `executor_started`;
    * `stop` runs in the finally block. Injected so tests never open a socket.
@@ -115,9 +115,7 @@ export async function runBridge({
       }
       const responded = Date.now();
       const readAudit =
-        handlerRan &&
-        handlerMode === 'm2' &&
-        (method === 'get_state' || method === 'get_position')
+        handlerRan && handlerMode === 'm2' && (method === 'get_state' || method === 'get_position')
           ? readAuditContext?.()
           : undefined;
       const entry: VerbLine = {
@@ -127,6 +125,11 @@ export async function runBridge({
         received_at: received / 1000,
         responded_at: responded / 1000,
         duration_ms: responded - received,
+        ...(readAudit?.readTimingsMs === undefined
+          ? {}
+          : { read_timings_ms: readAudit.readTimingsMs }),
+        ...(readAudit?.rpcCuWaitMs === undefined ? {} : { rpc_cu_wait_ms: readAudit.rpcCuWaitMs }),
+        ...(readAudit?.rpcHttpMs === undefined ? {} : { rpc_http_ms: readAudit.rpcHttpMs }),
         request,
         response: response as unknown as Json,
         attempt: readAudit?.attempt ?? 1,
@@ -192,7 +195,9 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
     initLogger(config.executorLogDir);
     const require = createRequire(import.meta.url);
     const sdk = require('@meteora-ag/dlmm/package.json') as { version: string };
-    const wallet = injectedHandlers ? new PublicKey(STUB_WALLET) : new PublicKey(config.walletPubkey!);
+    const wallet = injectedHandlers
+      ? new PublicKey(STUB_WALLET)
+      : new PublicKey(config.walletPubkey!);
     const reads = injectedHandlers
       ? undefined
       : new MeteoraReads(config, wallet, {
@@ -218,9 +223,7 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
         ? 'test fixture: injected handlers; no RPC, simulation, or signing'
         : 'M3: live reads + decoded swap stream; write verbs remain gated; no signer loaded',
     });
-    const stream = injectedHandlers
-      ? undefined
-      : await startSwapStream(config, reads!, log);
+    const stream = injectedHandlers ? undefined : await startSwapStream(config, reads!, log);
     return await runBridge({
       config,
       handlers,

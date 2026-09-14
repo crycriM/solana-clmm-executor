@@ -405,8 +405,13 @@ describe('swap stream sink', () => {
   });
 
   it('recovers all target-pool swaps from a finalized slot when transaction reads fail', async () => {
+    let transactionAttempts = 0;
     const h = harness({
-      fetchLogs: async () => { throw new Error('transaction unavailable'); },
+      commitment: 'finalized',
+      fetchLogs: async () => {
+        transactionAttempts += 1;
+        throw new Error('transaction unavailable');
+      },
       fetchBlock: async () => ({
         blockTime: 1756900012,
         transactions: [
@@ -438,11 +443,14 @@ describe('swap stream sink', () => {
     );
     expect((readJsonl(h.file) as SwapStreamRow[]).map((row) => row.tx_signature))
       .toEqual(['slot-target-a', 'slot-target-b']);
+    expect(transactionAttempts).toBe(1);
     expect(h.gaps).toContainEqual(expect.objectContaining({
       pool: POOL,
       to_signature: 'unavailable-notification',
       to_slot: 12,
       backfilled: 2,
+      recovery_source: 'slot',
+      recovery_complete: true,
     }));
     await h.stream.close();
   });

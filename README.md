@@ -65,6 +65,27 @@ The live functional suites under `tests/functional/` are excluded unless
 `RUN_LIVE=1` is set. M2 live reads stay `DRY_RUN=true` and require
 `SOLANA_RPC_URL`, `LIVE_POOL`, `LIVE_POSITION_ID`, and `WALLET_PUBKEY`; write
 suites retain their separate `LIVE_WRITE_CONFIRM=yes` guard.
+The M2 read suite defaults to a 30-minute executor-read soak with ten seconds
+between samples. `LIVE_READ_SOAK_SECONDS` and `LIVE_READ_INTERVAL_MS` may
+shorten a preflight, but an abbreviated run is not soak evidence. This suite
+does not run the Python keeper; gate 2 also requires its observation log.
+
+For the actual read-only keeper observation gate, build the executor and run
+from this directory with `dlmm-bot` installed in its own `.venv`:
+
+```bash
+set -a; source .env.m3; set +a
+DRY_RUN=true ../dlmm-bot/.venv/bin/python ../dlmm-bot/tools/live_keeper_soak.py
+```
+
+The launcher defaults to 30 minutes at a ten-second cadence. It forces zero
+transaction caps and `observation_only=True`, refuses write confirmation or
+Solana secret env vars, and passes only allow-listed environment keys to Node.
+It derives the observation grid from the owned position's on-chain bin prices;
+AS gamma/kappa are deliberately unused and this is not strategy calibration.
+It retains the hash-chained keeper log, executor JSONL, swap stream, and a
+`summary.json` under `logs/test-artifacts/evidence-keeper-m2-*`. A nonzero exit
+means at least one gate check, including `get_state` p95 < 400 ms, failed.
 
 M3 may use `SOLANA_WS_URL` when the HTTP provider does not expose Solana
 PubSub at its derived WebSocket URL. HTTP JSON-RPC is CU-rate-limited in the

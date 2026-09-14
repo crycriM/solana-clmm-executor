@@ -328,8 +328,9 @@ remains deliberately deferred to M4.
 **Writes on-chain:** no. **Ships before any signing exists** — without it the
 keeper has no verified fills and `verify_log.py` fails closed (spec §6).
 
-**Implemented 2026-09-10; offline + cross-language gate passed.** Live tail
-pending. Implementation notes: the DLMM IDL (v0.9.0) declares `events` without
+**Implemented and gate-passed 2026-09-10; offline, cross-language, and
+30-minute mainnet live checks passed.** Implementation notes: the DLMM IDL
+(v0.9.0) declares `events` without
 matching `types` entries or discriminators, so Anchor 0.30's `BorshEventCoder`
 cannot be built from it directly — `src/events.ts` constructs one coder per
 event from the IDL's own field list with `publicKey` remapped to `pubkey`.
@@ -341,8 +342,8 @@ per-bin split would be fabricated, and a wrong split is worse than none for
 `prev`/`new_active_bin`. The replay gate decodes the recorded event fixture
 through the compiled TypeScript stream, tails the exact file from Python, emits
 `observed_trade` / `bin_fill`, and passes `verify_log.py` completeness against
-the fixture swap set. See `status.md` for evidence; a live busy-pool soak
-remains pending.
+the fixture swap set. See `status.md` for retained live evidence and the
+independent chain-completeness result.
 
 `src/socketTeardown.ts` exists because `removeOnLogsListener` alone does not
 release a `Connection`: the client reconnects its socket implicitly and the
@@ -353,7 +354,7 @@ liability — with `bridge.ts`'s explicit exit as the backstop.
 
 ### T3.1 `src/swapStream.ts` — subscription
 
-- One `connection.onLogs(pool, {commitment: 'confirmed'})` mentions
+- One `connection.onLogs(pool, {commitment: config.solanaCommitment})` mentions
   subscription per configured pool (spec §6: runs whether or not we hold a
   position — `crossed_ours` is the observer's call). Current Meteora events are
   event-CPI inner instructions, so this bounds transaction-fetch load instead
