@@ -31,7 +31,11 @@ repetition below is explicitly non-gating.
 | Spec (`opms-spec.md`) | **Complete, reviewed 2026-09-09** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. Review fixes applied: §3.4 (bps is always 100 today), §3.5 (real mints + `"base"`/`"quote"` history), §4 (error codes synced to `protocol.ts`), new §1.2 (supersedes the GatewayExecBridge write path + PWL adapter). | Keep in lockstep with `protocol.ts` on every change. |
 | Wire types (`src/protocol.ts`) | **Present, reviewed** | Requests, `ExecResponse`, `TxReceipt`, verb `data` shapes, `SwapStreamRow`, handler surface. Matches `dlmm_bot.exec_bridge.ExecResult.from_payload` field-for-field. | Commit the reviewed contract with the rest of the implementation when ready. |
 | Runtime (`bridge.ts` … `log.ts`) | **M2/M3 gates complete** | M2 live reads plus finalized DLMM event-CPI decode, append-only swap JSONL, CU-limited RPC, durable cursors, history/slot backfill, and gap audit. | Keep write handlers gated. |
-| Signing / policy | **M4 foundation started; writes remain gated** | `signer.ts` supports the hardened Arm B file signer: public-key pin, file/parent permissions, and an RPC-genesis guard that rejects mainnet before reading the key unless `FILE_SIGNER_ALLOW_MAINNET=true`. `policy.ts` validates compiled legacy/v0 transactions before signing: program, writable-account, fee-payer, signer, ALT, SOL/slippage/priority-fee caps, plus a run-scoped SOL reservation. | Wire policy + simulation + signer into real deposit/withdraw builders; complete Arm B host gate and local-validator lifecycle. The production bridge remains `DRY_RUN=true`; no M4 write path is enabled. |
+| Signing / policy | **M4 foundation started; writes remain gated** | `signer.ts` supports the hardened Arm B file signer: public-key pin, file/parent permissions, and an RPC-genesis guard that rejects mainnet before reading the key unless `FILE_SIGNER_ALLOW_MAINNET=true`. `policy.ts` validates compiled legacy/v0 transactions before signing; `transactions.ts` owns blockhash → policy → unsigned simulation → reservation → sign → submit → receipt. `deposit.ts` rejects malformed/cross-active ladders and checks bid→quote / ask→base balances using decimal arithmetic; `preciseDeposit.ts` encodes decimal amounts as exact raw-u32-compressed IDL bins with no rounding, and `withdraw.ts` isolates the protocol-percent → DLMM-BPS conversion. | Wire these seams into real builders, lifting the pinned SDK's internal `addLiquidityOneSidePrecise2` IDL construction (it is exact-per-bin but lacks a public generic builder), then prove raw per-bin readback. Complete Arm B host gate and local-validator lifecycle. The production bridge remains `DRY_RUN=true`; no M4 write path is enabled. |
+
+`MAX_PRIORITY_FEE_LAMPORTS` is enforced as the complete priority fee, not as a
+CU price: `ceil(price_micro_lamports * explicit_CU_limit / 1_000_000)`.
+Nonzero prices without exactly one explicit compute-unit limit are rejected.
 | Swap stream | **Gate passed 2026-09-10** | Spec §6: pool `logsSubscribe` → event-CPI decode → append-only `SWAP_STREAM_PATH` JSONL → `JsonlSwapEventSource` → `observed_trade`/`bin_fill`. CU-limited reads plus slot/history recovery with explicit completeness state. | Operational monitoring only. |
 | Live evidence | **M2 and M3 read-only gates passed.** | M3 retained a 30-minute mainnet capture: 386 unique swaps, 15 owned-position bin fills, structural and independent chain completeness green. M2's 2026-09-14 read-only keeper run logged 168 state/position pairs with zero failed reads or writes; p95 was 1,851 ms, below the revised 2,000 ms limit. | Monitor RPC-tail latency; calibrate strategy before shadow deployment. |
 
@@ -258,7 +262,25 @@ and its referenced evidence directory.
 2. Complete the Arm B §5.5 host prerequisites and run a no-write local-validator
    signer probe. The file signer is local/devnet-only by default; do not set
    `FILE_SIGNER_ALLOW_MAINNET=true` during this step.
-3. Wire the compiled-policy decision, simulation result, message hash and
-   signer identity into real M4 deposit/withdraw handlers, then run the
+3. Implement the DLMM 1.5 exact-per-bin builder before deposit: its documented
+   public strategy APIs accept only range totals, while the keeper protocol
+   specifies per-bin amounts. Lift the SDK's own internal
+   `addLiquidityOneSidePrecise2` IDL construction into a reviewed local helper,
+   including compressed-amount rounding and account metas, and add a readback
+   test.
+4. Then wire the compiled-policy decision, simulation result, message hash and
+   signer identity into real M4 deposit/withdraw handlers and run the
    bid-debits-quote / ask-debits-base local-validator lifecycle gate. M5 stays
    last.
+
+The configured M2/M3 environment holds only the public wallet address and an
+owned existing position. It now supports the opt-in, read-only M4
+`existingPositionReadback` baseline; it cannot unlock a signer-backed write
+test. Write harnesses copy an explicit live signer/custody/cap configuration
+and reject fixture defaults or static AWS credentials.
+
+On 2026-09-14 the configured wallet/position passed that baseline: one live
+`get_state` and one live `get_position` response confirmed ownership, pool
+identity, non-empty unique bins, and decimal-free raw base/quote amounts. No
+signer was loaded and no write verb was sent. Evidence:
+`logs/test-artifacts/artifact-m4-existing-position-m4-readonly-20260914T1450Z.json`.

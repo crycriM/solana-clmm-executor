@@ -462,8 +462,18 @@ Validate every compiled transaction **before** the signing request:
     `sum(amounts)` ≤ wallet balance for that token (else
     `insufficient_balance`). This check is the guard on "the single most
     expensive bug available in this interface" (spec §11).
-- Build via `dlmm.addLiquidityByStrategySingleSide` (or `initializePositionAndAddLiquidityByStrategy`
-  for the first deposit); `strategy_type` passthrough.
+- **Pinned SDK capability check (discovered during M4):** `@meteora-ag/dlmm`
+  1.5.0 exports `initializePositionAndAddLiquidityByStrategy` and
+  `addLiquidityByStrategy`, but neither accepts the protocol's exact
+  `bin_ids[]`/`amounts[]`; they take range totals and distribute internally.
+  The IDL does expose exact `addLiquidityOneSidePrecise` / `...Precise2`
+  instructions with compressed per-bin raw amounts, and the SDK uses `...2`
+  internally for seed liquidity, but it does not expose a generic public
+  builder. Do **not** call a range strategy and claim it honoured this protocol
+  input. Lift that established low-level construction behind a reviewed local
+  builder, including compression/rounding and account-meta handling, then
+  prove per-bin readback on a local validator. The existing preflight still
+  validates contiguity, side and side-correct balances before any builder.
 - Second deposit on a live position must return the **same** `position_id`
   (keeper logs `position_liquidity_added`).
 - Success without a resolvable `position_id` → return `ok:false`

@@ -115,9 +115,26 @@ describe('TransactionPolicy', () => {
     }), 'slippage_cap');
 
     const tx = new Transaction({ feePayer: wallet.publicKey, recentBlockhash: BLOCKHASH }).add(
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: BigInt(config.maxPriorityFeeLamports + 1) * 1_000_000n }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1 }),
+      ComputeBudgetProgram.setComputeUnitPrice({
+        microLamports: BigInt(config.maxPriorityFeeLamports + 1) * 1_000_000n,
+      }),
     );
     rejectRule(() => policy.validate(tx, { writableAccounts: [], amounts: {} }), 'priority_fee_cap');
+  });
+
+  it('caps total priority fee, not only micro-lamports-per-CU', () => {
+    const { policy, wallet, config } = fixture();
+    const allowed = new Transaction({ feePayer: wallet.publicKey, recentBlockhash: BLOCKHASH }).add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: config.maxPriorityFeeLamports }),
+    );
+    expect(() => policy.validate(allowed, { writableAccounts: [], amounts: {} })).not.toThrow();
+
+    const noLimit = new Transaction({ feePayer: wallet.publicKey, recentBlockhash: BLOCKHASH }).add(
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 }),
+    );
+    rejectRule(() => policy.validate(noLimit, { writableAccounts: [], amounts: {} }), 'priority_fee_cap');
   });
 
   it('fails closed when a versioned transaction includes unresolved lookup tables', () => {

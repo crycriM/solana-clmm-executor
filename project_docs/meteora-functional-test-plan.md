@@ -455,6 +455,13 @@ command. Write tests must require `DRY_RUN=false` plus a separate, test-runner
 confirmation flag so an ordinary production configuration cannot accidentally
 activate a test campaign.
 
+The existing M2/M3 wallet configuration may be used for the opt-in
+`existingPositionReadback` baseline only: it performs `get_state` and
+`get_position`, records raw per-bin amounts, and does not load a signer. It is
+not evidence for a write gate. The lifecycle harness must copy explicit live
+signer/custody/cap configuration, rather than falling back to fixture values;
+a public address alone is insufficient to collect a write suite.
+
 The subprocess uses the configuration surface from `opms-spec.md` §9:
 
 ```text
