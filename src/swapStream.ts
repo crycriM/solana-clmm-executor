@@ -57,6 +57,8 @@ export interface ExecutorStreamGapInput {
   from_slot: number | null;
   to_slot: number | null;
   backfilled: number;
+  recovery_source?: 'slot' | 'history' | 'none';
+  recovery_complete?: boolean;
 }
 
 /** Everything the stream needs from its host; tests inject all of it. */
@@ -407,7 +409,7 @@ export class SwapStream {
           const value = await this.logsOf(notification.signature);
           if (value === null) throw new SwapStreamError('transaction unavailable');
           return value;
-        }, 6, this.retryDelayMs);
+        }, this.commitment === 'finalized' ? 1 : 6, this.retryDelayMs);
       } catch {
         this.reportError(`live transaction unavailable for ${notification.signature}`);
         const slotBackfill = await this.recoverSlot(subscribedPool, slot, notification.signature);
@@ -432,6 +434,8 @@ export class SwapStream {
               from_slot: cursor?.slot ?? null,
               to_slot: slot,
               backfilled: 0,
+              recovery_source: 'none',
+              recovery_complete: false,
             });
           }
         }
@@ -507,7 +511,8 @@ export class SwapStream {
     }
     const blockTime = block.blockTime ?? (await this.resolveBlockTime(slot));
     let backfilled = 0;
-    if (blockTime !== null) {
+    const recoveryComplete = blockTime !== null;
+    if (recoveryComplete) {
       for (const tx of block.transactions) {
         backfilled += this.emit(decodeLogs(
           { err: tx.err as never, logs: tx.logs, signature: tx.signature },
@@ -527,6 +532,8 @@ export class SwapStream {
       from_slot: from?.slot ?? null,
       to_slot: slot,
       backfilled,
+      recovery_source: 'slot',
+      recovery_complete: recoveryComplete,
     });
     return backfilled;
   }
@@ -604,12 +611,14 @@ export class SwapStream {
     const cursor = this.cursors.get(pool);
     const from = cursor ?? null;
     let signatures: ConfirmedSignatureInfo[] = [];
+    let recoveryComplete = true;
     try {
       // With no durable cursor, starting from "now" is intentional; querying
       // an unbounded account history would be both ambiguous and enormous.
       signatures = from === null ? [] : await this.missedSignatures(pool, from.signature);
     } catch {
       this.reportError(`signature backfill failed for pool ${pool}`);
+      recoveryComplete = false;
       signatures = [];
     }
     const ordered = orderForReplay(signatures).filter(
@@ -632,12 +641,14 @@ export class SwapStream {
         }, 3, this.retryDelayMs);
       } catch {
         this.reportError(`transaction backfill failed for ${info.signature}`);
+        recoveryComplete = false;
         tx = null;
       }
       if (tx === null) continue;
       const blockTime = tx.blockTime ?? (await this.resolveBlockTime(tx.slot));
       if (blockTime === null) {
         this.reportError(`block time unavailable for backfill slot ${tx.slot}`);
+        recoveryComplete = false;
         continue;
       }
       const rows = decodeLogs(
@@ -662,6 +673,8 @@ export class SwapStream {
       from_slot: from?.slot ?? null,
       to_slot: newestInfo?.slot ?? newest?.slot ?? from?.slot ?? null,
       backfilled,
+      recovery_source: 'history',
+      recovery_complete: recoveryComplete,
     };
     this.log.write(gap);
     return { backfilled, gap };

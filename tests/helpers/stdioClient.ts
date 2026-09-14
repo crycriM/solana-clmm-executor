@@ -231,6 +231,7 @@ export interface ExecutorAuditLine {
   rpc_read_url?: string;
   rpc_write_url?: string;
   rpc_ws_url?: string | null;
+  rpc_max_cu_per_second?: number;
   pool_allowlist?: string[];
   mint_allowlist?: string[];
 }
@@ -258,6 +259,7 @@ export interface RunArtifact {
     rpc_read_url: string | null;
     rpc_write_url: string | null;
     rpc_ws_url: string | null;
+    rpc_max_cu_per_second: number | null;
     wallet_pubkey: string | null;
     policy_hash: string | null;
     pools: string[];
@@ -292,6 +294,7 @@ export class RunRecorder {
         rpc_read_url: null,
         rpc_write_url: null,
         rpc_ws_url: null,
+        rpc_max_cu_per_second: null,
         wallet_pubkey: null,
         policy_hash: null,
         pools: [],
@@ -323,6 +326,7 @@ export class RunRecorder {
       rpc_read_url: started.rpc_read_url ?? null,
       rpc_write_url: started.rpc_write_url ?? null,
       rpc_ws_url: started.rpc_ws_url ?? null,
+      rpc_max_cu_per_second: started.rpc_max_cu_per_second ?? null,
       wallet_pubkey: started.wallet_pubkey ?? null,
       policy_hash: started.policy_hash ?? null,
       pools: started.pool_allowlist ?? [],

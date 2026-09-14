@@ -104,6 +104,10 @@ export interface VerbLine {
   received_at: number;
   responded_at: number;
   duration_ms: number;
+  /** Parallel get_state component latencies, recorded for read-tail diagnosis. */
+  read_timings_ms?: Record<string, number>;
+  rpc_cu_wait_ms?: Record<string, number>;
+  rpc_http_ms?: Record<string, number>;
   request: Json;
   response: Json;
   attempt: number;
@@ -143,6 +147,8 @@ export interface ExecutorStreamGapLine {
   from_slot: number | null;
   to_slot: number | null;
   backfilled: number;
+  recovery_source?: 'slot' | 'history' | 'none';
+  recovery_complete?: boolean;
 }
 
 export interface PolicyRejectedLine {

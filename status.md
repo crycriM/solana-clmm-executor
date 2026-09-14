@@ -1,6 +1,6 @@
 # solana-clmm-executor status
 
-**Status date:** 2026-09-10
+**Status date:** 2026-09-14
 **Scope:** The Solana DLMM OPMS "body": signing authority for the LP wallet,
 verb → Meteora/Jupiter/Jito execution, receipts, swap stream. Companion brain:
 `../dlmm-bot` (see its `status.md`). Spec:
@@ -13,15 +13,16 @@ repositories also have separate working-tree changes; this audit did not modify
 their production code. M2 only updates `dlmm-bot`'s subprocess test launcher to
 select the executor's explicit offline stub entrypoint.
 
-Evidence ledger. **M0/M1 are verified locally; M2 is implemented and verified
-offline with its live gate pending; M3's replay gate is green.** The production
+Evidence ledger. **M0/M1 are verified locally; M2's keeper observation run is
+complete but its live latency gate failed; M3 is green offline, cross-language,
+and on a 30-minute mainnet live gate.** The production
 bridge requires
 `DRY_RUN=true`; its two read verbs use live RPC/Meteora data and its four write
-verbs remain gated. Its read-only swap subscription writes confirmed decoded
-events to `SWAP_STREAM_PATH`. No simulation or signing is wired in. Nothing has
-been run against mainnet, devnet, or a
-local validator for a qualifying gate run. A single mainnet `get_state` smoke
-read succeeded; the public-RPC repetition below is explicitly non-gating.
+verbs remain gated. Its read-only swap subscription writes decoded events at
+the configured commitment to `SWAP_STREAM_PATH`. No simulation or signing is
+wired in. M3 has a qualifying mainnet gate run; M2's keeper-read gate remains
+pending. A separate mainnet `get_state` smoke read succeeded; the public-RPC
+repetition below is explicitly non-gating.
 
 ## Bottom line
 
@@ -29,10 +30,10 @@ read succeeded; the public-RPC repetition below is explicitly non-gating.
 |---|---|---|---|
 | Spec (`opms-spec.md`) | **Complete, reviewed 2026-09-09** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. Review fixes applied: §3.4 (bps is always 100 today), §3.5 (real mints + `"base"`/`"quote"` history), §4 (error codes synced to `protocol.ts`), new §1.2 (supersedes the GatewayExecBridge write path + PWL adapter). | Keep in lockstep with `protocol.ts` on every change. |
 | Wire types (`src/protocol.ts`) | **Present, reviewed** | Requests, `ExecResponse`, `TxReceipt`, verb `data` shapes, `SwapStreamRow`, handler surface. Matches `dlmm_bot.exec_bridge.ExecResult.from_payload` field-for-field. | Commit the reviewed contract with the rest of the implementation when ready. |
-| Runtime (`bridge.ts` … `log.ts`) | **M3 replay gate complete** | M2 live reads plus confirmed DLMM event decode, append-only swap JSONL, durable cursors, reconnect backfill, and gap audit. | Record M2/M3 live evidence; keep write handlers gated. |
+| Runtime (`bridge.ts` … `log.ts`) | **M3 gate complete** | M2 live reads plus finalized DLMM event-CPI decode, append-only swap JSONL, CU-limited RPC, durable cursors, history/slot backfill, and gap audit. | Record M2's keeper-read soak; keep write handlers gated. |
 | Signing / policy | **Separate signer work present; M4 remains gated** | `signer.ts` and its unit tests appeared during M1 verification and were preserved. The M1 bridge does not import them. Config validates caps and allowlists; transaction policy is still future work. | Full M4 implementation plus the test plan §5 signing gate before any mainnet write. No signing gate closure is claimed by M1. |
-| Swap stream | **Implemented; offline + cross-language gate passed 2026-09-10** | Spec §6: DLMM `logsSubscribe` → borsh event decode → append-only `SWAP_STREAM_PATH` JSONL → `JsonlSwapEventSource` → `observed_trade`/`bin_fill`. Slot-ordered reconnect backfill with `executor_stream_gap` bounds. | A live pool tail on the configured RPC, and `verify_log.py` §6.2/§6.4 against it. |
-| Live evidence | **Smoke only; not gate evidence.** | One production `get_state` succeeded against mainnet; a follow-up public-RPC run completed 16 reads before interruption. | Use the configured RPC and an owned position for the required ≥30-minute keeper run. |
+| Swap stream | **Gate passed 2026-09-10** | Spec §6: pool `logsSubscribe` → event-CPI decode → append-only `SWAP_STREAM_PATH` JSONL → `JsonlSwapEventSource` → `observed_trade`/`bin_fill`. CU-limited reads plus slot/history recovery with explicit completeness state. | Operational monitoring only. |
+| Live evidence | **M3 recorded; M2 read-latency gate failed.** | M3 retained a 30-minute mainnet capture: 386 unique swaps, 15 owned-position bin fills, structural and independent chain completeness green. M2's 2026-09-14 read-only keeper run logged 168 state/position pairs with zero failed reads or writes; p95 was 1,851 ms. | Diagnose RPC-tail latency and rerun the M2 keeper gate. |
 
 ## Gate ledger (build order, spec §10 + test plan)
 
@@ -40,8 +41,8 @@ read succeeded; the public-RPC repetition below is explicitly non-gating.
 |---|---|---|---|
 | 0 | M0 standalone toolchain/config/logging/vendors; wire types match `ExecResult.from_payload` | **Passed locally, 2026-09-10.** | Build/typecheck/lint plus M0 unit tests and twelve shared envelope parse tests. |
 | 1 | `bridge.ts` + stub `handlers.ts`; dlmm-bot suite passes against real subprocess in place of `FakeExecBridge` | **Passed locally, reverified 2026-09-10.** | All twelve existing keeper cases run through the built bridge; additional direct-CLI conformance, restart, and lifecycle tests. Commands below. |
-| 2 | `get_state` + `get_position` read-only; keeper dry-run on mainnet populates `state_observation` / `position_observation` incl. `claimable_fee_*_raw` | **Implemented; offline checks passed. Live gate pending.** | Recorded ≥30-minute dry-run cycle log; p95 < 400 ms. |
-| 3 | `swapStream.ts`; `observed_trade`/`bin_fill` events appear; `verify_log.py` completeness passes | **Passed offline + cross-language, 2026-09-10. Live pool tail pending.** | Read-only; ships before signing. Live ≥30-min tail of a busy pool with `verify_log.py` §6.2/§6.4 green and zero missing swaps (spec §11). |
+| 2 | `get_state` + `get_position` read-only; keeper dry-run on mainnet populates `state_observation` / `position_observation` incl. `claimable_fee_*_raw` | **30-minute keeper observations passed; p95 failed (1,851 ms).** | Repeat the read-only keeper gate with p95 < 400 ms. |
+| 3 | `swapStream.ts`; `observed_trade`/`bin_fill` events appear; `verify_log.py` completeness passes | **Passed offline + live, 2026-09-10.** | Read-only 30-minute mainnet tail: 386 unique swaps, 15 owned-position fills, zero missing/extra chain swaps. |
 | 4 | `policy.ts` + `signer.ts` + `deposit_single_sided`/`withdraw`; dust lifecycle per test plan §8.3 | **Blocked on signing gate (test plan §5).** | Local-validator + mainnet-dust lifecycle; bid-debits-quote / ask-debits-base unit test (spec §11 — "the single most expensive bug available"). |
 | 5 | `swap`, then `refresh_bundle` (Jito bundle + sequential fallback with `data.stage`) | **Not started; last.** | Receipt-fidelity test: `sum(fee_lamports)` equals on-chain fees fetched independently. |
 
@@ -121,8 +122,8 @@ npm run check:m2
 ```
 
 On 2026-09-10, build, typecheck, lint, and **173 TS tests** passed, followed by
-**172 Python tests** through `--executor-subprocess`. No qualifying live
-evidence path is recorded yet, so gate 2 is intentionally not marked passed.
+**172 Python tests** through `--executor-subprocess`. No passing live
+read/keeper gate is recorded, so gate 2 is intentionally not marked passed.
 
 A non-gating production smoke used the public mainnet RPC and an allow-listed
 pool selected from Meteora's pool API. One cold `get_state` completed
@@ -133,6 +134,59 @@ therefore 20,393 ms and does not meet or meaningfully measure the 400 ms target.
 Temporary executor logs are at
 `/tmp/solana-clmm-m2-smoke.p053rk/executor-*.jsonl`; they are not retained gate
 artifacts.
+
+A read-only mainnet soak using `.env.m3` ran for 30 minutes 52 seconds across
+2026-09-12/13. The retained artifact is
+`logs/test-artifacts/artifact-liveReads-m3-live-20260910.json` (the run ID came
+from `.env.m3`); its evidence directory contains the executor audit and swap
+stream. All 164 `get_state` and 164 `get_position` responses succeeded, with
+exact raw fee fields present. Each verb's slots were independently monotonic;
+twice a position read observed one slot below the immediately preceding state
+read. The original test incorrectly required the interleaved sequence to be
+monotonic and failed on that assertion; the assertion has since been corrected
+to check each verb independently. The audit independently shows `get_state`
+p50 229 ms, p95 **2,515 ms**, maximum 5,401 ms, and 22 of 164 calls at or
+above 400 ms. All 143 stream recovery gaps were marked complete; 363 swaps
+were retained. This is useful failure evidence, **not a gate pass**: p95 exceeds
+the 400 ms target and this harness did not drive the Python keeper's
+`state_observation`/`position_observation` cycle log.
+
+On 2026-09-14, `get_state` gained per-leg `read_timings_ms` audit fields. A
+three-minute diagnostic showed 11 of 12 slow reads had a slow Solana RPC leg,
+versus two with a slow CoinGecko price leg. The redundant `getSlot` request was
+then removed from `get_state`: its four balance responses already carry context
+slots. Offline build/typecheck/lint, 249 TypeScript tests, and 179 Python
+subprocess tests passed. A short post-change preflight measured p95 397 ms over
+52 reads, but was not qualifying duration evidence.
+
+The actual observation-only Python keeper ran against the production read-only
+executor for **1,800.066 seconds**. Its hash-chained log replayed cleanly:
+168 `state_observation`, 168 `position_observation`, 168 decisions, one
+`run_started`/`run_stopped`, and no missing raw fee fields or action requests.
+The executor handled 338 reads with zero failures and zero write verbs. The
+retained audit shows 169 `get_state` samples, p50 238 ms, p95 **1,851 ms**,
+maximum 5,552 ms, and 37 calls at or above 400 ms. Thirty-five of those 37
+had a slow Solana RPC component; nine had a slow price component (overlap is
+possible). This identifies the read tail as predominantly RPC-side, without
+proving whether the provider or local CU queue is the bottleneck. Evidence:
+`logs/test-artifacts/evidence-keeper-m2-20260914T080731Z/summary.json` plus
+the retained keeper, executor, and swap JSONL in that directory. **Gate 2
+remains open** because p95 exceeds 400 ms; this observation-only mode does not
+calibrate or exercise AS strategy decisions.
+
+The subsequent `rpc_cu_wait_ms`/`rpc_http_ms` audit split uses async context so
+swap-stream traffic is not charged to a keeper read. A three-minute mainnet
+diagnostic retained 49 state reads (p95 465 ms): four were at or above 400 ms,
+none waited 100 ms in the client CU limiter, two had slow upstream Solana HTTP
+legs, and two had slow price refreshes. This short window does not prove the
+full-run cause, but it provides no evidence that raising the CU limit would
+fix M2. The 400 ms gate and the current price-freshness policy remain unchanged.
+Evidence: `logs/test-artifacts/artifact-liveReads-m2-cu-vs-http-20260914.json`
+and its referenced audit directory.
+
+With the observation-only mode, launcher tests, and diagnostic audit fields,
+`npm run check:m3` passes again: build, typecheck, lint, **250 TypeScript
+tests**, and **187 Python tests** with `--executor-subprocess` (2026-09-14).
 
 ## M3 offline and cross-language evidence
 
@@ -172,20 +226,32 @@ that exact file with `JsonlSwapEventSource`. It asserts `observed_trade`,
 completeness against the fixture swap set.
 
 Reproduce with `npm run check:m3`: on 2026-09-10 build, typecheck, lint, and
-**223 TS tests across 16 files** passed, followed by **177 Python tests** with
+**249 TS tests across 18 files** passed, followed by **179 Python tests** with
 `--executor-subprocess`.
 
-Not yet evidenced: a live tail of a busy pool on the configured RPC. The
-offline gate exercises the decode path and the file contract, but not a real
-websocket subscription, real block-time resolution, or `verify_log.py` against
-a live window. Gate 3 is therefore marked passed for the offline and
-cross-language parts only.
+The qualifying live run used Alchemy for HTTP reads, a public Solana WebSocket
+because the supplied Alchemy endpoint rejected `logsSubscribe`, finalized
+commitment, and the enforced 240 CU/s default (below Alchemy's 300 CU/s free
+tier). It ran for 1,800 seconds and retained 386 schema-valid, slot-ordered,
+unique swap rows. Eighty-two individual transaction misses fell back to their
+finalized blocks; every fallback was marked `recovery_complete=true` and none
+was incomplete. An earlier 30-minute attempt without slot recovery was
+correctly rejected after an independent block audit found seven missing swaps.
+
+The retained stream then passed through the real Python source/observer with
+the owned position's 69 live bins: 386 `observed_trade` and 15 `bin_fill`
+events. Structural verification and the rate-limited independent Alchemy chain
+comparison both passed with zero missing/extra swaps, no duplicate trades, and
+no orphan/crossed-without-fill errors. Evidence:
+`logs/test-artifacts/artifact-swapStream-m3-live-slot-recovery-30m-20260910.json`
+and its referenced evidence directory.
 
 ## From here
 
-1. Run M2's ≥30-minute mainnet keeper dry-run and attach the executor/keeper
-   logs with measured p95.
-2. Tail a live pool for ≥30 minutes with the swap stream enabled and close
-   `verify_log.py` §6.2/§6.4 against it.
-3. Record each step's gate result in this ledger as it passes.
-4. Steps 4–5 only after the test plan §5 signing gate is satisfied.
+1. Reduce the upstream RPC/price tail or use a suitable dedicated read
+   endpoint without weakening price freshness or increasing free-tier CU
+   pressure on a guess. Rerun the
+   ≥30-minute observation-only keeper gate with p95 below 400 ms before
+   declaring M2 passed. Calibrate AS gamma/kappa before any strategy shadow
+   or write-enabled deployment.
+2. Steps 4–5 only after the test plan §5 signing gate is satisfied.

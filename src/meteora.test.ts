@@ -4,11 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-ag/dlmm';
 import { PublicKey, type AccountInfo, type ParsedAccountData } from '@solana/web3.js';
 import { createReadHandlers } from './handlers.js';
-import {
-  MeteoraReads,
-  type PoolReader,
-  type ReadConnection,
-} from './meteora.js';
+import { MeteoraReads, type PoolReader, type ReadConnection } from './meteora.js';
 import { loadConfig } from './config.js';
 import { baseEnv, TEST_BASE_MINT, TEST_POOL } from './testing.js';
 import type { ExecutorLine } from './log.js';
@@ -82,6 +78,7 @@ class FakeConnection implements ReadConnection {
   readonly rpcEndpoint: string;
   account: AccountInfo<Buffer> | null = positionAccount();
   fail = false;
+  slotCalls = 0;
 
   constructor(endpoint = 'https://primary.rpc.test') {
     this.rpcEndpoint = endpoint;
@@ -104,11 +101,14 @@ class FakeConnection implements ReadConnection {
     if (this.fail) throw new Error('offline');
     return {
       context: { slot: state.slot },
-      value: { amount: address.equals(reserveX) ? state.token_x.reserve_raw : state.token_y.reserve_raw },
+      value: {
+        amount: address.equals(reserveX) ? state.token_x.reserve_raw : state.token_y.reserve_raw,
+      },
     };
   }
 
   async getSlot() {
+    this.slotCalls += 1;
     if (this.fail) throw new Error('offline');
     return state.slot;
   }
@@ -134,7 +134,9 @@ function fakePool(): PoolReader {
     getFeeInfo() {
       return {
         baseFeeRatePercentage: {
-          mul: (value: number) => ({ toString: () => String(Number(state.base_fee_percent) * value) }),
+          mul: (value: number) => ({
+            toString: () => String(Number(state.base_fee_percent) * value),
+          }),
         },
       };
     },
@@ -170,10 +172,7 @@ function fakePool(): PoolReader {
   };
 }
 
-function harness(
-  connections: FakeConnection[] = [new FakeConnection()],
-  pricesAvailable = true,
-) {
+function harness(connections: FakeConnection[] = [new FakeConnection()], pricesAvailable = true) {
   let creates = 0;
   let mappings = 0;
   let priceCalls = 0;
@@ -195,7 +194,12 @@ function harness(
     tokenMapping: async (mint) => {
       mappings += 1;
       const token = mint === state.token_x.mint ? state.token_x : state.token_y;
-      return { address: mint, symbol: token.symbol, coingeckoId: token.coingecko_id, decimals: token.decimals };
+      return {
+        address: mint,
+        symbol: token.symbol,
+        coingeckoId: token.coingecko_id,
+        decimals: token.decimals,
+      };
     },
     tokenPrices: async () => {
       priceCalls += 1;
@@ -216,7 +220,8 @@ function harness(
 
 describe('M2 get_state recorded RPC mapping', () => {
   it('preserves >2^53 raw strings and caches immutable pool metadata', async () => {
-    const h = harness();
+    const connection = new FakeConnection();
+    const h = harness([connection]);
     const first = await h.reads.getState(TEST_POOL);
     const second = await h.reads.getState(TEST_POOL);
 
@@ -228,6 +233,15 @@ describe('M2 get_state recorded RPC mapping', () => {
     expect(first.tvl_usd).toBe(375_000);
     expect(second).toEqual(first);
     expect(h.counts()).toEqual({ creates: 1, mappings: 2, priceCalls: 1 });
+    expect(connection.slotCalls).toBe(0);
+    expect(h.reads.auditContext().readTimingsMs).toEqual({
+      active_bin: expect.any(Number),
+      wallet_base: expect.any(Number),
+      wallet_quote: expect.any(Number),
+      reserve_base: expect.any(Number),
+      reserve_quote: expect.any(Number),
+      prices: expect.any(Number),
+    });
   });
 
   it('fails over to the distinct endpoint and emits a sanitized audit line', async () => {
@@ -237,7 +251,7 @@ describe('M2 get_state recorded RPC mapping', () => {
     const h = harness([primary, fallback]);
     const result = await h.reads.getState(TEST_POOL);
     expect(result.active_bin).toBe(state.active_bin);
-    expect(h.reads.auditContext()).toEqual({
+    expect(h.reads.auditContext()).toMatchObject({
       attempt: 2,
       rpcEndpoint: 'https://fallback.rpc.test/key',
     });

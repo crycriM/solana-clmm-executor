@@ -8,6 +8,23 @@
  */
 
 import type { FetchFn } from '@solana/web3.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+export interface RpcFetchTiming {
+  cuWaitMs: number;
+  httpMs: number;
+  requests: number;
+}
+
+const readTiming = new AsyncLocalStorage<RpcFetchTiming>();
+
+/** Attribute nested web3.js fetches to one read leg, excluding stream traffic. */
+export function withRpcFetchTiming<T>(
+  timing: RpcFetchTiming,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return readTiming.run(timing, operation);
+}
 
 const METHOD_CU: Readonly<Record<string, number>> = {
   getAccountInfo: 10,
@@ -41,6 +58,7 @@ const systemClock: RateLimiterClock = {
 /** Strict one-second token bucket; concurrent callers are serialized. */
 export class RpcCuRateLimiter {
   private tokens: number;
+  private capacity: number;
   private updatedAt: number;
   private queue: Promise<void> = Promise.resolve();
 
@@ -52,12 +70,13 @@ export class RpcCuRateLimiter {
       throw new Error('maxCuPerSecond must be positive');
     }
     this.tokens = maxCuPerSecond;
+    this.capacity = maxCuPerSecond;
     this.updatedAt = clock.now();
   }
 
   acquire(cost: number): Promise<void> {
-    const boundedCost = Math.min(Math.max(1, cost), this.maxCuPerSecond);
-    const pending = this.queue.then(() => this.waitFor(boundedCost));
+    const normalizedCost = Math.max(1, cost);
+    const pending = this.queue.then(() => this.waitFor(normalizedCost));
     this.queue = pending.catch(() => undefined);
     return pending;
   }
@@ -65,30 +84,30 @@ export class RpcCuRateLimiter {
   private refill(): void {
     const now = this.clock.now();
     const elapsedSeconds = Math.max(0, now - this.updatedAt) / 1000;
-    this.tokens = Math.min(
-      this.maxCuPerSecond,
-      this.tokens + elapsedSeconds * this.maxCuPerSecond,
-    );
+    this.tokens = Math.min(this.capacity, this.tokens + elapsedSeconds * this.maxCuPerSecond);
     this.updatedAt = now;
   }
 
   private async waitFor(cost: number): Promise<void> {
+    // A single RPC may cost more than a deliberately low per-second budget.
+    // Grow only the bucket capacity—not its current balance—so the call waits
+    // until its full cost has accrued instead of being undercharged.
+    this.capacity = Math.max(this.capacity, cost);
     for (;;) {
       this.refill();
       if (this.tokens >= cost) {
         this.tokens -= cost;
         return;
       }
-      const waitMs = Math.max(
-        1,
-        Math.ceil(((cost - this.tokens) / this.maxCuPerSecond) * 1000),
-      );
+      const waitMs = Math.max(1, Math.ceil(((cost - this.tokens) / this.maxCuPerSecond) * 1000));
       await this.clock.sleep(waitMs);
     }
   }
 }
 
-interface RpcRequestShape { method?: unknown }
+interface RpcRequestShape {
+  method?: unknown;
+}
 
 /** Sum a JSON-RPC batch's method costs; malformed bodies get a conservative 40 CU. */
 export function rpcBodyCu(body: unknown): number {
@@ -111,8 +130,19 @@ export function rateLimitedFetch(
   fetchFn: FetchFn = globalThis.fetch,
 ): FetchFn {
   return async (input, init) => {
+    const timing = readTiming.getStore();
+    const queuedAt = performance.now();
     await limiter.acquire(rpcBodyCu(init?.body));
-    return fetchFn(input, init);
+    if (timing) timing.cuWaitMs += performance.now() - queuedAt;
+    const fetchAt = performance.now();
+    try {
+      return await fetchFn(input, init);
+    } finally {
+      if (timing) {
+        timing.httpMs += performance.now() - fetchAt;
+        timing.requests += 1;
+      }
+    }
   };
 }
 
