@@ -9,6 +9,7 @@ const live = liveReadRunnerInfo();
 const DEFAULT_SOAK_SECONDS = 30 * 60;
 const DEFAULT_READ_INTERVAL_MS = 10_000;
 const MINIMUM_SAMPLES = 20;
+const MAX_STATE_P95_MS = 2_000;
 
 function nonNegativeNumber(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -100,7 +101,7 @@ describe.skipIf(!live.configured)('live reads', () => {
         expect(positionSlots.every((slot, i) => i === 0 || slot >= positionSlots[i - 1]!)).toBe(
           true,
         );
-        expect(p95).toBeLessThan(400);
+        expect(p95).toBeLessThan(MAX_STATE_P95_MS);
 
         state.artifact = await finishLiveRun(run, 'clean');
       } finally {

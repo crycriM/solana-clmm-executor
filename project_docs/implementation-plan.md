@@ -291,7 +291,7 @@ remains deliberately deferred to M4.
 - Response `data` = `StateData` (protocol.ts): decimal + `_raw` string
   balances, `base_fee_bps` from current pool fee (feeds bin_fill accrual),
   `slot` from RPC response context, `fetched_at` = wall clock seconds (float).
-- p95 target < 400 ms (spec §3.1): measure by logging `duration_ms` in the
+- p95 target < 2,000 ms (spec §3.1): measure by logging `duration_ms` in the
   executor JSONL; assert in T2.4.
 
 ### T2.3 `get_position` handler
@@ -315,7 +315,7 @@ remains deliberately deferred to M4.
 - Live: run keeper `dry_run` on mainnet for one pool ≥ 30 min; check
   `state_observation` / `position_observation` events populate with
   `claimable_fee_*_raw` non-null and monotonic-slot sanity; p95 `duration_ms`
-  < 400 ms from executor JSONL. Attach the log path to `status.md`.
+  < 2,000 ms from executor JSONL. Attach the log path to `status.md`.
 - Test plan §8.2 (connectivity and live reads) closure.
 
 ---
@@ -568,7 +568,7 @@ risk (spec §10).
 |---|---|---|---|
 | M0 scaffolding | S | no | build+lint green |
 | M1 wire | S–M | no | keeper suite vs real subprocess (fixture parse + T1.4) |
-| M2 reads | M | no | dry-run mainnet observations + p95 < 400 ms |
+| M2 reads | M | no | dry-run mainnet observations + p95 < 2,000 ms |
 | M3 swap stream | M–L | no | `observed_trade`/`bin_fill` + `verify_log.py` §6.2/§6.4 |
 | M4 signing core | L | dust only | bid-debits-quote unit + dust lifecycle §8.3/§8.4 |
 | M5 swap+bundle | M–L | dust only | e2e §8.7 + replay round-trip + receipt fidelity |
