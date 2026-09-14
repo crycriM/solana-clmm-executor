@@ -419,10 +419,14 @@ wallet before that.
 
 ### T4.1 `src/signer.ts`
 
-- Interface `signTransaction(tx): Promise<Buffer>` with two impls selected by
+- Interface `sign(message): Promise<Buffer>` with two impls selected by
   `WALLET_SIGNER`: `kms` (AWS KMS `Sign` with Ed25519 — test plan §5.1) and
-  `keypair` (Secrets Manager ARN fallback, §5.4; devnet/local-validator only —
-  refuse `keypair` against mainnet unless an explicit override env is set).
+  `file` (the §5.5 local-server Solana CLI keypair file). The file arm pins
+  `WALLET_PUBKEY`, requires a private owner-only file and directory, and is
+  local-validator/devnet-only unless an explicit `FILE_SIGNER_ALLOW_MAINNET`
+  override is set after its host and dust-wallet gates. The previous
+  Secrets-Manager `keypair` fallback is deliberately deferred: KMS Ed25519 is
+  now available, so it has no active deployment use case.
 - `signer_id` (KMS key ARN / pubkey) into every executor JSONL verb line.
 - The private key must never enter the process env or heap in the `kms` path;
   the `keypair` path zeroes the buffer after use.

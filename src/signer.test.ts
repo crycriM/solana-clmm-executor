@@ -13,11 +13,16 @@ import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   addressFromSpki,
+  assertFileSignerNetwork,
+  createConfiguredSigner,
   createFileSigner,
   createKmsSigner,
+  MAINNET_BETA_GENESIS_HASH,
   rawEd25519FromSpki,
   SignerError,
 } from './signer.js';
+import { loadConfig } from './config.js';
+import { baseEnv } from './testing.js';
 
 const ARN = 'arn:aws:kms:eu-west-1:111122223333:key/test-key';
 
@@ -248,5 +253,32 @@ describe('createFileSigner (arm B)', () => {
 
   it('fails closed when the keyfile is missing', () => {
     expect(() => createFileSigner(join(tmpdir(), 'clmm-does-not-exist', 'wallet.json'))).toThrow();
+  });
+});
+
+describe('configured file signer network gate', () => {
+  function genesis(hash: string) {
+    return { getGenesisHash: async () => hash };
+  }
+
+  it('rejects a file signer before it reads a mainnet keyfile', async () => {
+    const config = loadConfig(baseEnv({
+      DRY_RUN: 'false', WALLET_SIGNER: 'file', KMS_KEY_ARN: undefined,
+      WALLET_KEYPAIR_PATH: '/this/must/not/be/read.json',
+    }));
+    await expect(assertFileSignerNetwork(config, genesis(MAINNET_BETA_GENESIS_HASH)))
+      .rejects.toThrow(/local\/devnet-only/);
+    await expect(createConfiguredSigner(config, genesis(MAINNET_BETA_GENESIS_HASH)))
+      .rejects.toThrow(/local\/devnet-only/);
+  });
+
+  it('allows local-validator/devnet identities and honors the explicit mainnet override', async () => {
+    const local = loadConfig(baseEnv({ WALLET_SIGNER: 'file', DRY_RUN: 'true' }));
+    await expect(assertFileSignerNetwork(local, genesis('local-validator-genesis'))).resolves.toBeUndefined();
+    const override = loadConfig(baseEnv({
+      WALLET_SIGNER: 'file', DRY_RUN: 'true', FILE_SIGNER_ALLOW_MAINNET: 'true',
+    }));
+    await expect(assertFileSignerNetwork(override, genesis(MAINNET_BETA_GENESIS_HASH)))
+      .resolves.toBeUndefined();
   });
 });

@@ -68,10 +68,25 @@ describe('config fail-closed', () => {
       .toThrow('WALLET_KEYPAIR_PATH');
   });
 
+  it('requires a public-key pin for a live file signer', () => {
+    expect(() => loadConfig(baseEnv({
+      WALLET_SIGNER: 'file', KMS_KEY_ARN: undefined,
+      WALLET_KEYPAIR_PATH: '/etc/clmm-executor/wallet.json', WALLET_PUBKEY: undefined,
+    }))).toThrow('WALLET_PUBKEY');
+  });
+
   it('permits file arm in dry-run without a keypair file', () => {
     const cfg = loadConfig(baseEnv({ WALLET_SIGNER: 'file', KMS_KEY_ARN: undefined, DRY_RUN: 'true' }));
     expect(cfg.walletSigner).toBe('file');
     expect(cfg.walletKeypairPath).toBeNull();
+  });
+
+  it('makes the file signer local/devnet-only unless explicitly overridden', () => {
+    expect(loadConfig(baseEnv()).fileSignerAllowMainnet).toBe(false);
+    expect(loadConfig(baseEnv({ FILE_SIGNER_ALLOW_MAINNET: 'true' })).fileSignerAllowMainnet)
+      .toBe(true);
+    expect(() => loadConfig(baseEnv({ FILE_SIGNER_ALLOW_MAINNET: 'yes' })))
+      .toThrow('FILE_SIGNER_ALLOW_MAINNET');
   });
 
   it('rejects a malformed WALLET_PUBKEY pin on any signer arm', () => {
@@ -105,6 +120,7 @@ describe('policyHash', () => {
     ['MAX_SLIPPAGE_BPS', '51'],
     ['MAX_PRIORITY_FEE_LAMPORTS', '100001'],
     ['JITO_TIP_LAMPORTS', '1'],
+    ['FILE_SIGNER_ALLOW_MAINNET', 'true'],
   ])('changes when %s changes', (key, value) => {
     const a = policyHash(loadConfig(baseEnv()));
     const b = policyHash(loadConfig(baseEnv({ [key]: value })));

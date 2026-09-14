@@ -32,7 +32,8 @@ import {
 import { readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { GetPublicKeyCommand, KMSClient, SignCommand } from '@aws-sdk/client-kms';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, type Connection } from '@solana/web3.js';
+import type { ExecutorConfig } from './config.js';
 
 /** DER SubjectPublicKeyInfo prefix for an Ed25519 key (RFC 8410 §4). */
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
@@ -43,6 +44,9 @@ const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'he
 
 /** Solana CLI keypair files are 32 seed bytes followed by 32 public-key bytes. */
 const SOLANA_KEYPAIR_BYTES = 64;
+
+/** The canonical mainnet-beta genesis hash, not a hostname heuristic. */
+export const MAINNET_BETA_GENESIS_HASH = '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp';
 
 export class SignerError extends Error {}
 
@@ -139,6 +143,44 @@ async function kmsSign(
 export interface FileSignerOptions {
   /** `WALLET_PUBKEY`. When set, the loaded key must derive this address. */
   expectedPublicKey?: string;
+}
+
+/**
+ * Arm B starts local-only.  Check the chain identity before reading the key
+ * file: URLs are aliases/proxies, whereas the genesis hash is the network
+ * identity Solana clients use.  Mainnet needs a deliberate, audited override.
+ */
+export async function assertFileSignerNetwork(
+  config: Pick<ExecutorConfig, 'walletSigner' | 'fileSignerAllowMainnet'>,
+  connection: Pick<Connection, 'getGenesisHash'>,
+): Promise<void> {
+  if (config.walletSigner !== 'file' || config.fileSignerAllowMainnet) return;
+  const genesisHash = await connection.getGenesisHash();
+  if (genesisHash === MAINNET_BETA_GENESIS_HASH) {
+    throw new SignerError(
+      'file signer is local/devnet-only; set FILE_SIGNER_ALLOW_MAINNET=true only after the Arm B mainnet gate',
+    );
+  }
+}
+
+/** Resolve the selected signer after Arm B's network guard has passed. */
+export async function createConfiguredSigner(
+  config: ExecutorConfig,
+  connection?: Pick<Connection, 'getGenesisHash'>,
+  kmsClient?: KMSClient,
+): Promise<Signer> {
+  if (config.walletSigner === 'file') {
+    if (!config.walletKeypairPath) throw new SignerError('WALLET_KEYPAIR_PATH is required');
+    if (!connection) throw new SignerError('file signer requires a chain identity check');
+    await assertFileSignerNetwork(config, connection);
+    return createFileSigner(config.walletKeypairPath, { expectedPublicKey: config.walletPubkey ?? undefined });
+  }
+  if (config.walletSigner === 'kms') {
+    if (!config.kmsKeyArn) throw new SignerError('KMS_KEY_ARN is required');
+    return createKmsSigner(config.kmsKeyArn, kmsClient);
+  }
+  // The legacy Secrets Manager fallback is intentionally not implemented.
+  throw new SignerError('keypair signer is not implemented; use kms or file');
 }
 
 /**

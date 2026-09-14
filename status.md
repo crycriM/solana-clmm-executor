@@ -31,7 +31,7 @@ repetition below is explicitly non-gating.
 | Spec (`opms-spec.md`) | **Complete, reviewed 2026-09-09** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. Review fixes applied: §3.4 (bps is always 100 today), §3.5 (real mints + `"base"`/`"quote"` history), §4 (error codes synced to `protocol.ts`), new §1.2 (supersedes the GatewayExecBridge write path + PWL adapter). | Keep in lockstep with `protocol.ts` on every change. |
 | Wire types (`src/protocol.ts`) | **Present, reviewed** | Requests, `ExecResponse`, `TxReceipt`, verb `data` shapes, `SwapStreamRow`, handler surface. Matches `dlmm_bot.exec_bridge.ExecResult.from_payload` field-for-field. | Commit the reviewed contract with the rest of the implementation when ready. |
 | Runtime (`bridge.ts` … `log.ts`) | **M2/M3 gates complete** | M2 live reads plus finalized DLMM event-CPI decode, append-only swap JSONL, CU-limited RPC, durable cursors, history/slot backfill, and gap audit. | Keep write handlers gated. |
-| Signing / policy | **Separate signer work present; M4 remains gated** | `signer.ts` and its unit tests appeared during M1 verification and were preserved. The M1 bridge does not import them. Config validates caps and allowlists; transaction policy is still future work. | Full M4 implementation plus the test plan §5 signing gate before any mainnet write. No signing gate closure is claimed by M1. |
+| Signing / policy | **M4 foundation started; writes remain gated** | `signer.ts` supports the hardened Arm B file signer: public-key pin, file/parent permissions, and an RPC-genesis guard that rejects mainnet before reading the key unless `FILE_SIGNER_ALLOW_MAINNET=true`. `policy.ts` validates compiled legacy/v0 transactions before signing: program, writable-account, fee-payer, signer, ALT, SOL/slippage/priority-fee caps, plus a run-scoped SOL reservation. | Wire policy + simulation + signer into real deposit/withdraw builders; complete Arm B host gate and local-validator lifecycle. The production bridge remains `DRY_RUN=true`; no M4 write path is enabled. |
 | Swap stream | **Gate passed 2026-09-10** | Spec §6: pool `logsSubscribe` → event-CPI decode → append-only `SWAP_STREAM_PATH` JSONL → `JsonlSwapEventSource` → `observed_trade`/`bin_fill`. CU-limited reads plus slot/history recovery with explicit completeness state. | Operational monitoring only. |
 | Live evidence | **M2 and M3 read-only gates passed.** | M3 retained a 30-minute mainnet capture: 386 unique swaps, 15 owned-position bin fills, structural and independent chain completeness green. M2's 2026-09-14 read-only keeper run logged 168 state/position pairs with zero failed reads or writes; p95 was 1,851 ms, below the revised 2,000 ms limit. | Monitor RPC-tail latency; calibrate strategy before shadow deployment. |
 
@@ -255,4 +255,10 @@ and its referenced evidence directory.
 1. Monitor the upstream RPC/price tail against the revised <2,000 ms p95 gate;
    the retained ≥30-minute observation-only run passes that gate. Calibrate AS
    gamma/kappa before any strategy shadow or write-enabled deployment.
-2. Steps 4–5 only after the test plan §5 signing gate is satisfied.
+2. Complete the Arm B §5.5 host prerequisites and run a no-write local-validator
+   signer probe. The file signer is local/devnet-only by default; do not set
+   `FILE_SIGNER_ALLOW_MAINNET=true` during this step.
+3. Wire the compiled-policy decision, simulation result, message hash and
+   signer identity into real M4 deposit/withdraw handlers, then run the
+   bid-debits-quote / ask-debits-base local-validator lifecycle gate. M5 stays
+   last.
