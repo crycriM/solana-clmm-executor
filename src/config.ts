@@ -36,6 +36,8 @@ export interface ExecutorConfig {
   maxSolPerTx: number;
   maxSolPerRun: number;
   maxSlippageBps: number;
+  /** Deposit active-bin drift cap, in bins rather than basis points. */
+  maxActiveBinSlippageBins: number;
   maxPriorityFeeLamports: number;
   jitoEnabled: boolean;
   jitoBlockEngineUrl: string | null;
@@ -138,6 +140,7 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
     maxSolPerTx: number(env, 'MAX_SOL_PER_TX'),
     maxSolPerRun: number(env, 'MAX_SOL_PER_RUN'),
     maxSlippageBps: int(env, 'MAX_SLIPPAGE_BPS'),
+    maxActiveBinSlippageBins: int(env, 'MAX_ACTIVE_BIN_SLIPPAGE_BINS'),
     maxPriorityFeeLamports: int(env, 'MAX_PRIORITY_FEE_LAMPORTS'),
     jitoEnabled: boolean(env, 'JITO_ENABLED'),
     jitoBlockEngineUrl: optional(env, 'JITO_BLOCK_ENGINE_URL') || null,
@@ -176,6 +179,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ['MAX_SOL_PER_TX', config.maxSolPerTx],
     ['MAX_SOL_PER_RUN', config.maxSolPerRun],
     ['MAX_SLIPPAGE_BPS', config.maxSlippageBps],
+    ['MAX_ACTIVE_BIN_SLIPPAGE_BINS', config.maxActiveBinSlippageBins],
     ['MAX_PRIORITY_FEE_LAMPORTS', config.maxPriorityFeeLamports],
     ['JITO_TIP_LAMPORTS', config.jitoTipLamports],
   ] as const) {
@@ -183,6 +187,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
   if (config.maxSlippageBps > 10_000) {
     throw new ConfigValidationError('MAX_SLIPPAGE_BPS must be at most 10000');
+  }
+  if (config.maxActiveBinSlippageBins > 2_147_483_647) {
+    throw new ConfigValidationError('MAX_ACTIVE_BIN_SLIPPAGE_BINS must fit i32');
   }
 
   if (config.walletSigner !== 'kms' && config.walletSigner !== 'keypair' && config.walletSigner !== 'file') {
@@ -243,6 +250,7 @@ function policyRelevant(config: ExecutorConfig): string {
     maxSolPerTx: config.maxSolPerTx,
     maxSolPerRun: config.maxSolPerRun,
     maxSlippageBps: config.maxSlippageBps,
+    maxActiveBinSlippageBins: config.maxActiveBinSlippageBins,
     maxPriorityFeeLamports: config.maxPriorityFeeLamports,
     jitoEnabled: config.jitoEnabled,
     jitoBlockEngineUrl: config.jitoBlockEngineUrl,

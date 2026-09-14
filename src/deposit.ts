@@ -6,7 +6,7 @@ import type { DepositSingleSidedRequest, ErrorCode, StateData } from './protocol
 const Decimal = DecimalDefault as unknown as typeof DecimalDefault.default;
 
 export class DepositValidationError extends Error {
-  constructor(readonly code: Extract<ErrorCode, 'bad_request' | 'bins_cross_active' | 'insufficient_balance'>, detail: string) {
+  constructor(readonly code: Extract<ErrorCode, 'bad_request' | 'bins_cross_active' | 'insufficient_balance' | 'active_bin_slippage_exceeded'>, detail: string) {
     super(detail);
   }
 }
@@ -44,9 +44,17 @@ export function validateSingleSidedDeposit(
     total = total.plus(new Decimal(amount));
   }
   const bid = request.side === 'bid';
-  if ((bid && request.bin_ids.some((bin) => bin >= state.active_bin)) ||
-      (!bid && request.bin_ids.some((bin) => bin < state.active_bin))) {
-    throw new DepositValidationError('bins_cross_active', 'bid bins must be below active; ask bins must be at or above active');
+  const crosses = (activeBin: number): boolean =>
+    (bid && request.bin_ids.some((bin) => bin >= activeBin)) ||
+    (!bid && request.bin_ids.some((bin) => bin < activeBin));
+  if (crosses(request.expected_active_bin)) {
+    throw new DepositValidationError('bins_cross_active', 'ladder crosses the expected active bin');
+  }
+  if (Math.abs(state.active_bin - request.expected_active_bin) > request.max_active_bin_slippage) {
+    throw new DepositValidationError('active_bin_slippage_exceeded', 'current active bin exceeds requested drift tolerance');
+  }
+  if (crosses(state.active_bin)) {
+    throw new DepositValidationError('bins_cross_active', 'ladder crosses the current active bin');
   }
   const debitedToken = bid ? 'quote' : 'base';
   if (total.greaterThan(new Decimal(state.balances[debitedToken]))) {

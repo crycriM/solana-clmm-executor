@@ -167,7 +167,9 @@ Request:
 
 ```jsonc
 {"method":"deposit_single_sided","pool":"...","side":"bid"|"ask",
- "bin_ids":[8100,8101,...], "amounts":[250.0,...], "strategy_type":"Spot"}
+ "bin_ids":[8100,8101,...], "amounts":[250.0,...],
+ "expected_active_bin":8102,"max_active_bin_slippage":1,
+ "strategy_type":"Spot"}
 ```
 
 - `amounts[i]` pairs with `bin_ids[i]`. **Units are side-dependent**: `side ==
@@ -175,11 +177,25 @@ Request:
   `keeper._bin_payload`, where a bid carries `amount_quote` and an ask carries
   `amount_base`. Getting this backwards silently doubles or destroys inventory —
   validate it against wallet balances before signing and reject on mismatch.
-- `bin_ids` must be contiguous and strictly increasing; bids strictly below and
-  asks strictly at/above `active_bin`. Reject otherwise (`error:
+- `bin_ids` must be contiguous and strictly increasing; bids are strictly below
+  and asks at/above `expected_active_bin`, and must remain on that same side of
+  the current bin at execution. Reject otherwise (`error:
   "bins_cross_active"`) rather than letting the SDK auto-correct — the keeper's
   fill model assumes single-sided bins.
-- `strategy_type` ∈ `Spot | Curve | BidAsk`, passed through to the SDK.
+- `expected_active_bin` is the active bin against which the keeper constructed
+  the absolute ladder; `max_active_bin_slippage` is a non-negative tolerance in
+  **bins**, not basis points. Exceeding it returns
+  `active_bin_slippage_exceeded` and must leave tokens and position unchanged.
+- Exact `amounts[i]` make `strategy_type` audit metadata only; it does not alter
+  the distribution and is not passed to a strategy builder.
+- The executor must use Meteora `addLiquidityOneSidePrecise2` (or a
+  deployed-IDL-compatible precise successor), whose compressed bin amounts
+  reconstruct each requested raw amount exactly. `addLiquidityOneSide` accepts
+  `activeId`/`maxActiveBinSlippage` but only a total plus u16 weights, so it is
+  not an implementation of this verb. Because the pinned precise ABI does not
+  itself carry the active-bin fields, execution additionally requires an
+  atomic on-chain active-bin guard in the same transaction; an RPC preflight
+  alone is insufficient.
 - Response must carry `position_id` (the position NFT/PDA) — the keeper stores
   it as `_current_position_id` and every later verb and `position_observation`
   depends on it. A successful deposit without `position_id` is a protocol
@@ -229,7 +245,8 @@ return `ok:false, error:"slippage_exceeded"` rather than a partial fill.
 ```jsonc
 {"method":"refresh_bundle","withdraw_position_id":"...",
  "swap_spec": null | {"in_mint","out_mint","amount","max_slippage_bps"},
- "deposit_spec":{"pool":"...","bid_bins":[...],"ask_bins":[...],
+ "deposit_spec":{"pool":"...","expected_active_bin":8102,
+                 "max_active_bin_slippage":1,"bid_bins":[...],"ask_bins":[...],
                  "bid_amounts":[...],"ask_amounts":[...]}}
 ```
 
@@ -288,6 +305,7 @@ Rules, all of them load-bearing for the log:
    in `tx_signatures` anyway, so the offline verifier can resolve it later.
 5. `error` is a stable snake_case code. The closed set is the union in
    `src/protocol.ts`'s `ErrorCode`: `slippage_exceeded`,
+   `active_bin_slippage_exceeded`,
    `insufficient_balance`, `policy_rejected`, `rpc_timeout`,
    `bins_cross_active`, `submission_ambiguous`, `simulation_failed`,
    `unknown_position`, `bad_request`, `internal_error` — optionally
@@ -452,7 +470,8 @@ WALLET_SIGNER=kms|keypair|file, KMS_KEY_ARN | WALLET_SECRET_ARN | WALLET_KEYPAIR
 WALLET_PUBKEY (required by the M2 read-only bridge; later also pins/derives from the signer)
 FILE_SIGNER_ALLOW_MAINNET=false (Arm B explicit mainnet override only)
 POOL_ALLOWLIST, MINT_ALLOWLIST
-MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS, MAX_PRIORITY_FEE_LAMPORTS
+MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS,
+MAX_ACTIVE_BIN_SLIPPAGE_BINS, MAX_PRIORITY_FEE_LAMPORTS
 JITO_ENABLED, JITO_BLOCK_ENGINE_URL, JITO_TIP_LAMPORTS
 SWAP_STREAM_PATH, EXECUTOR_LOG_DIR
 DRY_RUN=true|false

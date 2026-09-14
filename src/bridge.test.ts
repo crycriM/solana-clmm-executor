@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { runBridge, UnrecoverableError } from './bridge.js';
 import { loadConfig } from './config.js';
 import { createStubHandlers, STUB_QUOTE_MINT } from './handlers.js';
-import type { ExecHandlers, ExecRequest, ExecResponse, Verb } from './protocol.js';
+import type { ExecHandlers, ExecRequest, ExecResponse, RefreshBundleRequest, Verb } from './protocol.js';
 import type { VerbLine } from './log.js';
 import { baseEnv } from './testing.js';
 
@@ -141,10 +141,26 @@ describe('stdio loop', () => {
     { ...requests.deposit_single_sided, amounts: [] },
     { ...requests.deposit_single_sided, side: 'both' },
     { ...requests.deposit_single_sided, bin_ids: [98.1, 99] },
+    { ...requests.deposit_single_sided, expected_active_bin: 98.1 },
+    { ...requests.deposit_single_sided, max_active_bin_slippage: -1 },
     { ...requests.swap, in_mint: 'base' },
     { ...requests.swap, amount: -1 },
     { ...requests.swap, max_slippage_bps: 10001 },
     { ...requests.refresh_bundle, deposit_spec: null },
+    {
+      ...requests.refresh_bundle,
+      deposit_spec: {
+        ...(requests.refresh_bundle as RefreshBundleRequest).deposit_spec,
+        expected_active_bin: undefined,
+      },
+    },
+    {
+      ...requests.refresh_bundle,
+      deposit_spec: {
+        ...(requests.refresh_bundle as RefreshBundleRequest).deposit_spec,
+        max_active_bin_slippage: -1,
+      },
+    },
     { ...requests.refresh_bundle, swap_spec: {} },
     '{"method":"swap","amount":1e999}',
   ])('rejects malformed verb fields', async (request) => {

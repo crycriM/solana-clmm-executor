@@ -36,6 +36,7 @@ export type PolicyRule =
   | 'sol_per_tx_cap'
   | 'sol_per_run_cap'
   | 'slippage_cap'
+  | 'active_bin_slippage_cap'
   | 'priority_fee_cap';
 
 export class PolicyRejected extends Error {
@@ -50,6 +51,7 @@ export interface PolicyAmounts {
   quoteAmount?: number;
   solSpendLamports?: number;
   maxSlippageBps?: number;
+  maxActiveBinSlippage?: number;
 }
 
 export interface PolicyInput {
@@ -134,6 +136,13 @@ export class TransactionPolicy {
     }
     const slippage = finiteNonNegative(input.amounts.maxSlippageBps, 'slippage_cap');
     if (slippage > this.config.maxSlippageBps) reject('slippage_cap', 'slippage exceeds cap');
+    const activeBinSlippage = finiteNonNegative(
+      input.amounts.maxActiveBinSlippage,
+      'active_bin_slippage_cap',
+    );
+    if (activeBinSlippage > this.config.maxActiveBinSlippageBins) {
+      reject('active_bin_slippage_cap', 'active-bin slippage exceeds cap');
+    }
 
     const message = tx instanceof Transaction
       ? this.validateLegacy(tx, allowedWritable)

@@ -62,6 +62,7 @@ const WRITE_GATEWAY_KEYS = [
   'SOLANA_COMMITMENT', 'WALLET_SIGNER', 'KMS_KEY_ARN', 'WALLET_KEYPAIR_PATH',
   'WALLET_PUBKEY', 'FILE_SIGNER_ALLOW_MAINNET', 'POOL_ALLOWLIST', 'MINT_ALLOWLIST',
   'MAX_SOL_PER_TX', 'MAX_SOL_PER_RUN', 'MAX_SLIPPAGE_BPS', 'MAX_PRIORITY_FEE_LAMPORTS',
+  'MAX_ACTIVE_BIN_SLIPPAGE_BINS',
   'JITO_ENABLED', 'JITO_BLOCK_ENGINE_URL', 'JITO_TIP_LAMPORTS',
 ] as const;
 
@@ -76,7 +77,7 @@ export function liveWriteGatewayEnv(env: NodeJS.ProcessEnv = process.env): NodeJ
   if (signer !== 'kms' && signer !== 'file') throw new Error('WALLET_SIGNER=kms|file required');
   for (const key of [
     'SOLANA_RPC_URL', 'WALLET_PUBKEY', 'MAX_SOL_PER_TX', 'MAX_SOL_PER_RUN',
-    'MAX_SLIPPAGE_BPS', 'MAX_PRIORITY_FEE_LAMPORTS',
+    'MAX_SLIPPAGE_BPS', 'MAX_ACTIVE_BIN_SLIPPAGE_BINS', 'MAX_PRIORITY_FEE_LAMPORTS',
   ]) {
     if (!env[key]) throw new Error(`${key} required for live writes`);
   }

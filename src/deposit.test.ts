@@ -8,7 +8,8 @@ const state: Pick<StateData, 'active_bin' | 'balances'> = {
 
 function request(overrides: Partial<DepositSingleSidedRequest> = {}): DepositSingleSidedRequest {
   return {
-    method: 'deposit_single_sided', pool: 'pool', side: 'bid', bin_ids: [98, 99], amounts: [100, 200], strategy_type: 'Spot',
+    method: 'deposit_single_sided', pool: 'pool', side: 'bid', bin_ids: [98, 99], amounts: [100, 200],
+    expected_active_bin: 100, max_active_bin_slippage: 1, strategy_type: 'Spot',
     ...overrides,
   };
 }
@@ -39,6 +40,17 @@ describe('validateSingleSidedDeposit', () => {
   it('rejects a ladder that crosses the active bin instead of auto-correcting it', () => {
     rejected(request({ bin_ids: [99, 100] }), 'bins_cross_active');
     rejected(request({ side: 'ask', bin_ids: [99, 100] }), 'bins_cross_active');
+  });
+
+  it('accepts drift at the requested boundary and rejects one bin beyond it', () => {
+    expect(validateSingleSidedDeposit(request({ expected_active_bin: 101 }), state))
+      .toMatchObject({ debitedToken: 'quote' });
+    rejected(request({ expected_active_bin: 98 }), 'bins_cross_active');
+    rejected(request({ expected_active_bin: 102, max_active_bin_slippage: 1 }), 'active_bin_slippage_exceeded');
+  });
+
+  it('rejects a ladder that tolerated drift moved across the current active bin', () => {
+    rejected(request({ side: 'ask', expected_active_bin: 99, bin_ids: [99, 100], amounts: [1, 1] }), 'bins_cross_active');
   });
 
   it('uses the side-correct balance for its insufficient-funds guard', () => {

@@ -109,7 +109,8 @@ explicit subscription endpoint), SOLANA_COMMITMENT (confirmed)
 SOLANA_RPC_MAX_CU_PER_SECOND (default 240; Alchemy free-tier headroom)
 WALLET_SIGNER=kms|keypair, KMS_KEY_ARN | WALLET_SECRET_ARN
 POOL_ALLOWLIST, MINT_ALLOWLIST (comma-separated pubkeys)
-MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS, MAX_PRIORITY_FEE_LAMPORTS
+MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS,
+MAX_ACTIVE_BIN_SLIPPAGE_BINS, MAX_PRIORITY_FEE_LAMPORTS
 JITO_ENABLED, JITO_BLOCK_ENGINE_URL, JITO_TIP_LAMPORTS
 SWAP_STREAM_PATH, EXECUTOR_LOG_DIR
 DRY_RUN
@@ -445,7 +446,10 @@ Validate every compiled transaction **before** the signing request:
 6. caps: per-tx base amount, quote amount, SOL spend, `max_slippage_bps ≤
    MAX_SLIPPAGE_BPS`, priority fee ≤ `MAX_PRIORITY_FEE_LAMPORTS`, cumulative
    SOL per run ≤ `MAX_SOL_PER_RUN` (run counter in-process, reset on restart
-   and say so in `executor_started`);
+   and say so in `executor_started`); for deposits, separately cap
+   `max_active_bin_slippage` (a **bin count**, not bps) against the
+   `MAX_ACTIVE_BIN_SLIPPAGE_BINS` config value — it is not interchangeable with
+   swap-price slippage or `MAX_SLIPPAGE_BPS`;
 7. simulate (`simulateTransaction`, sig-verify off) — on failure return
    `simulation_failed` + `simulation_logs` into the executor JSONL, **without
    signing**.
@@ -454,26 +458,57 @@ Validate every compiled transaction **before** the signing request:
 
 ### T4.3 `deposit_single_sided` (spec §3.3)
 
+- **Contract amendment completed 2026-09-14:** the request carries
+  `expected_active_bin` (the active bin against which the keeper constructed
+  the ladder) and `max_active_bin_slippage` (non-negative integer bins); the
+  spec, `protocol.ts`, all four `ExecBridge` surfaces and shared fixtures were
+  updated together. Do not silently use the SDK default of 3 bins. The existing
+  `strategy_type` does **not** select or alter the precise distribution; once
+  `amounts[i]` is authoritative it is, at most, audit metadata and the spec
+  must stop saying it is passed through to the SDK.
 - Pre-validate (before building the tx):
   - `bin_ids` contiguous, strictly increasing (else `bad_request`);
-  - bids strictly `< active_bin`, asks `>= active_bin` (else
+  - bids strictly `< expected_active_bin`, asks `>= expected_active_bin` (else
     `bins_cross_active` — reject, never let the SDK auto-correct);
+  - `abs(current_active_bin - expected_active_bin) ≤
+    max_active_bin_slippage`; exceeding it is a stale-price rejection, not an
+    invitation to shift or reshape the ladder;
   - side-dependent units: bid amounts are quote, ask amounts are base; check
     `sum(amounts)` ≤ wallet balance for that token (else
     `insufficient_balance`). This check is the guard on "the single most
     expensive bug available in this interface" (spec §11).
-- **Pinned SDK capability check (discovered during M4):** `@meteora-ag/dlmm`
-  1.5.0 exports `initializePositionAndAddLiquidityByStrategy` and
-  `addLiquidityByStrategy`, but neither accepts the protocol's exact
-  `bin_ids[]`/`amounts[]`; they take range totals and distribute internally.
-  The IDL does expose exact `addLiquidityOneSidePrecise` / `...Precise2`
-  instructions with compressed per-bin raw amounts, and the SDK uses `...2`
-  internally for seed liquidity, but it does not expose a generic public
-  builder. Do **not** call a range strategy and claim it honoured this protocol
-  input. Lift that established low-level construction behind a reviewed local
-  builder, including compression/rounding and account-meta handling, then
-  prove per-bin readback on a local validator. The existing preflight still
-  validates contiguity, side and side-correct balances before any builder.
+- **Instruction semantics and selection (pinned `@meteora-ag/dlmm` 1.5.0
+  IDL):**
+  - `addLiquidityOneSide` takes one total raw `amount`, observed `activeId`,
+    `maxActiveBinSlippage`, and a u16 weight distribution. The strategy variant
+    likewise lets the program derive the per-bin allocation. These paths can
+    protect active-bin drift on-chain, but they do **not** accept the keeper's
+    exact raw amount for each bin. They therefore cannot implement this verb.
+  - `addLiquidityOneSidePrecise` takes
+    `bins[{binId, amount:u32}]` plus `decompressMultiplier:u64`.
+    `addLiquidityOneSidePrecise2` adds `maxAmount:u64` and the v2 remaining-
+    accounts form. Each deposited raw bin amount is exactly
+    `amount * decompressMultiplier`; no Spot/Curve/BidAsk redistribution is
+    performed. Use `...Precise2` for this executor (fall back to the older
+    precise instruction only after an explicit deployed-program/IDL
+    compatibility check), and set `maxAmount` to a validated,
+    transfer-fee-aware raw-token debit ceiling rather than `u64::MAX`.
+  - Neither precise instruction in the pinned IDL has `activeId` or
+    `maxActiveBinSlippage`. Do not claim that passing the latter off-chain gives
+    the same protection: a read/simulate check races with execution. M4 remains
+    blocked until the chosen precise path also has an **atomic on-chain** active-
+    bin guard. Acceptable resolutions are a Meteora precise instruction version
+    whose deployed IDL includes the guard, or a reviewed guard/CPI instruction
+    in the same transaction that asserts
+    `abs(lbPair.activeId - expected_active_bin) ≤ max_active_bin_slippage`
+    before `...Precise2`. If neither is available, fail closed; do not fall back
+    to `addLiquidityOneSide` and lose the requested profile.
+- Lift the SDK's established low-level `...Precise2` construction behind a
+  reviewed local builder, including exact raw conversion, GCD compression,
+  transaction splitting when a compressed amount exceeds u32, bin-array and
+  Token-2022 remaining-account handling, and the atomic guard above. A fresh
+  pre-build read and simulation remain defense in depth, not substitutes for
+  that guard.
 - Second deposit on a live position must return the **same** `position_id`
   (keeper logs `position_liquidity_added`).
 - Success without a resolvable `position_id` → return `ok:false`
@@ -499,6 +534,17 @@ Validate every compiled transaction **before** the signing request:
   pool — test plan §4 environment): **the spec §11 unit — `side:"bid"` debits
   quote and `side:"ask"` debits base, asserted against wallet balance
   deltas.** This test is the release blocker for M4.
+- Decode the built instruction and assert its discriminator is
+  `addLiquidityOneSidePrecise2` (never `addLiquidityOneSide` or a strategy
+  instruction), every `(binId, compressed amount)` and multiplier reconstructs
+  the requested raw profile exactly, and `maxAmount` equals the validated debit
+  ceiling (including any Token-2022 transfer-fee allowance). Read the position
+  back and compare every bin in raw units.
+- Active-bin drift matrix: drift at `max_active_bin_slippage` succeeds; drift
+  one bin beyond it fails atomically with no token/position delta. Include a
+  race test that changes `activeId` after the executor's last RPC read but
+  before execution, proving the result comes from the on-chain guard rather
+  than preflight. Assert no path inherits the SDK's default 3-bin tolerance.
 - Policy unit matrix: one test per rule (7 rules × reject/accept).
 - Dust lifecycle per test plan §8.3 on devnet + mainnet dust wallet; per-bin
   placement readback §8.4; restart/recovery §8.8 (kill executor mid-run,
@@ -529,6 +575,9 @@ risk (spec §10).
 
 - withdraw 100 % → optional swap → redeposit both sides, sequentially, each
   confirmed before the next.
+- Apply the same `deposit_spec.expected_active_bin` and
+  `deposit_spec.max_active_bin_slippage` contract, policy cap, exact Precise2
+  profile, and atomic active-bin guard defined in T4.3 to both redeposit legs.
 - On mid-bundle failure: **no blind retry**. Return `ok:false` with
   `data.stage ∈ withdrew|swapped|deposited`, every receipt collected so far,
   and `data.position_id` of whatever now exists; keeper reconciles from chain
@@ -596,16 +645,22 @@ dlmm-bot logging pipeline with zero custody risk), stand up the signing gate
 1. **Side/units inversion in `deposit_single_sided`** (bid↔quote / ask↔base) —
    mitigated by the balance pre-check (T4.3) and the local-validator delta
    unit (T4.5, spec §11). Treat any regression here as a release blocker.
-2. **Swap-stream gap on reconnect** — mitigated by mandatory backfill +
+2. **Exact profile vs active-bin protection** — the pinned Meteora precise
+   instructions preserve exact per-bin raw amounts but do not carry
+   `maxActiveBinSlippage`; the non-precise instruction has the guard but may
+   redistribute/round the profile. T4.3 makes an atomic guard plus Precise2 a
+   release gate; an off-chain-only check or fallback to `addLiquidityOneSide`
+   is not acceptable.
+3. **Swap-stream gap on reconnect** — mitigated by mandatory backfill +
    `executor_stream_gap` bounds (T3.3) and the WS-kill test.
-3. **Fee-estimate drift** — `fee_lamports` must come from confirmed receipts
+4. **Fee-estimate drift** — `fee_lamports` must come from confirmed receipts
    only; DRY_RUN uses simulation estimates and is visibly marked
    (`data.dry_run`, `dryrun_` signature prefix, spec §9) so it can never be
    confused with live accounting.
- 4. **lp-monitor copy drift** — vendored files (T0.5) fall behind upstream
-    fixes. Mitigated by the provenance header + `vendor/README.md` SHA pin, so
-    the drift check is mechanical (`git show <sha>:<path>` vs the copy) and
-    re-copying is a deliberate reviewed step, not a silent import. No build
-    coupling: lp-monitor refactors cannot break this project.
-5. **Contract drift across four ExecBridge implementations** — mitigated by
+5. **lp-monitor copy drift** — vendored files (T0.5) fall behind upstream
+   fixes. Mitigated by the provenance header + `vendor/README.md` SHA pin, so
+   the drift check is mechanical (`git show <sha>:<path>` vs the copy) and
+   re-copying is a deliberate reviewed step, not a silent import. No build
+   coupling: lp-monitor refactors cannot break this project.
+6. **Contract drift across four ExecBridge implementations** — mitigated by
    shared fixtures (X2) and the one-change rule (§0).

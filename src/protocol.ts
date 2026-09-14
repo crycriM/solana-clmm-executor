@@ -17,6 +17,7 @@ export type Direction = 'up' | 'down';
 
 export type ErrorCode =
   | 'slippage_exceeded'
+  | 'active_bin_slippage_exceeded'
   | 'insufficient_balance'
   | 'policy_rejected'
   | 'rpc_timeout'
@@ -39,6 +40,11 @@ export interface DepositSingleSidedRequest {
   bin_ids: number[];
   /** amounts[i] pairs with bin_ids[i]. bid → QUOTE token, ask → BASE token. */
   amounts: number[];
+  /** Active bin used by the keeper when constructing this absolute ladder. */
+  expected_active_bin: number;
+  /** Maximum permitted absolute active-bin drift, measured in bins (not bps). */
+  max_active_bin_slippage: number;
+  /** Audit metadata only; exact amounts, not this label, determine the profile. */
   strategy_type: StrategyType;
 }
 
@@ -69,6 +75,9 @@ export interface SwapSpec {
 
 export interface DepositSpec {
   pool: string;
+  expected_active_bin: number;
+  /** Maximum permitted absolute active-bin drift, measured in bins (not bps). */
+  max_active_bin_slippage: number;
   bid_bins: number[];
   ask_bins: number[];
   /** quote-token amounts */

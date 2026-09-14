@@ -10,8 +10,9 @@ verb → Meteora/Jupiter/Jito execution, receipts, swap stream. Companion brain:
 implementation, tests, project docs, and this ledger are currently working-tree
 changes and have not been committed. The companion `dlmm-bot` and `mm-core`
 repositories also have separate working-tree changes; this audit did not modify
-their production code. M2 only updates `dlmm-bot`'s subprocess test launcher to
-select the executor's explicit offline stub entrypoint.
+their unrelated work. The 2026-09-14 deposit-contract amendment updates
+`dlmm-bot`'s keeper/bridge request fields and the legacy Gateway bridge surface
+in lockstep with this executor.
 
 Evidence ledger. **M0/M1 are verified locally; M2's keeper observation run is
 complete but its live latency gate failed; M3 is green offline, cross-language,
@@ -28,10 +29,10 @@ repetition below is explicitly non-gating.
 
 | Area | Status | What exists | What is still needed |
 |---|---|---|---|
-| Spec (`opms-spec.md`) | **Complete, reviewed 2026-09-09** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. Review fixes applied: §3.4 (bps is always 100 today), §3.5 (real mints + `"base"`/`"quote"` history), §4 (error codes synced to `protocol.ts`), new §1.2 (supersedes the GatewayExecBridge write path + PWL adapter). | Keep in lockstep with `protocol.ts` on every change. |
-| Wire types (`src/protocol.ts`) | **Present, reviewed** | Requests, `ExecResponse`, `TxReceipt`, verb `data` shapes, `SwapStreamRow`, handler surface. Matches `dlmm_bot.exec_bridge.ExecResult.from_payload` field-for-field. | Commit the reviewed contract with the rest of the implementation when ready. |
+| Spec (`opms-spec.md`) | **Complete, reviewed 2026-09-14** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. The deposit contract distinguishes exact Precise2 profiles from weighted one-sided deposits and carries explicit expected-active-bin/slippage fields. | Keep in lockstep with `protocol.ts` on every change. |
+| Wire types (`src/protocol.ts`) | **Present, reviewed** | Requests, `ExecResponse`, `TxReceipt`, verb `data` shapes, `SwapStreamRow`, handler surface. Direct and refresh deposits require `expected_active_bin` plus `max_active_bin_slippage`; TS/Python/Gateway bridge surfaces and fixtures are synchronized. | Commit the reviewed contract with the rest of the implementation when ready. |
 | Runtime (`bridge.ts` … `log.ts`) | **M2/M3 gates complete** | M2 live reads plus finalized DLMM event-CPI decode, append-only swap JSONL, CU-limited RPC, durable cursors, history/slot backfill, and gap audit. | Keep write handlers gated. |
-| Signing / policy | **M4 foundation started; writes remain gated** | `signer.ts` supports the hardened Arm B file signer: public-key pin, file/parent permissions, and an RPC-genesis guard that rejects mainnet before reading the key unless `FILE_SIGNER_ALLOW_MAINNET=true`. `policy.ts` validates compiled legacy/v0 transactions before signing; `transactions.ts` owns blockhash → policy → unsigned simulation → reservation → sign → submit → receipt. `deposit.ts` rejects malformed/cross-active ladders and checks bid→quote / ask→base balances using decimal arithmetic; `preciseDeposit.ts` encodes decimal amounts as exact raw-u32-compressed IDL bins with no rounding, and `withdraw.ts` isolates the protocol-percent → DLMM-BPS conversion. | Wire these seams into real builders, lifting the pinned SDK's internal `addLiquidityOneSidePrecise2` IDL construction (it is exact-per-bin but lacks a public generic builder), then prove raw per-bin readback. Complete Arm B host gate and local-validator lifecycle. The production bridge remains `DRY_RUN=true`; no M4 write path is enabled. |
+| Signing / policy | **M4 foundation started; writes remain gated** | `signer.ts` supports the hardened Arm B file signer: public-key pin, file/parent permissions, and an RPC-genesis guard that rejects mainnet before reading the key unless `FILE_SIGNER_ALLOW_MAINNET=true`. `policy.ts` validates compiled legacy/v0 transactions before signing, including a separate active-bin-slippage cap; `transactions.ts` owns blockhash → policy → unsigned simulation → reservation → sign → submit → receipt. `deposit.ts` rejects malformed, stale and cross-active ladders and checks bid→quote / ask→base balances using decimal arithmetic; `preciseDeposit.ts` encodes decimal amounts as exact raw-u32-compressed IDL bins with no rounding. | Resolve the atomic active-bin guard for Precise2, then wire these seams into the real builder and prove raw per-bin readback. Complete Arm B host gate and local-validator lifecycle. The production bridge remains `DRY_RUN=true`; no M4 write path is enabled. |
 
 `MAX_PRIORITY_FEE_LAMPORTS` is enforced as the complete priority fee, not as a
 CU price: `ceil(price_micro_lamports * explicit_CU_limit / 1_000_000)`.
@@ -43,8 +44,8 @@ Nonzero prices without exactly one explicit compute-unit limit are rejected.
 
 | Step | Gate | State | Closure condition |
 |---|---|---|---|
-| 0 | M0 standalone toolchain/config/logging/vendors; wire types match `ExecResult.from_payload` | **Passed locally, 2026-09-10.** | Build/typecheck/lint plus M0 unit tests and twelve shared envelope parse tests. |
-| 1 | `bridge.ts` + stub `handlers.ts`; dlmm-bot suite passes against real subprocess in place of `FakeExecBridge` | **Passed locally, reverified 2026-09-10.** | All twelve existing keeper cases run through the built bridge; additional direct-CLI conformance, restart, and lifecycle tests. Commands below. |
+| 0 | M0 standalone toolchain/config/logging/vendors; wire types match `ExecResult.from_payload` | **Passed locally; contract amendment reverified 2026-09-14.** | Build/typecheck/lint plus M0 unit tests and shared envelope parse tests. |
+| 1 | `bridge.ts` + stub `handlers.ts`; dlmm-bot suite passes against real subprocess in place of `FakeExecBridge` | **Passed locally, reverified 2026-09-14.** | `npm run check:m1`: 233 executor unit tests plus 192 Python tests through both fake and subprocess bridges. |
 | 2 | `get_state` + `get_position` read-only; keeper dry-run on mainnet populates `state_observation` / `position_observation` incl. `claimable_fee_*_raw` | **Passed under revised <2,000 ms p95 limit.** | Retained 30-minute keeper run revalidated separately; original <400 ms-era summary remains unchanged. |
 | 3 | `swapStream.ts`; `observed_trade`/`bin_fill` events appear; `verify_log.py` completeness passes | **Passed offline + live, 2026-09-10.** | Read-only 30-minute mainnet tail: 386 unique swaps, 15 owned-position fills, zero missing/extra chain swaps. |
 | 4 | `policy.ts` + `signer.ts` + `deposit_single_sided`/`withdraw`; dust lifecycle per test plan §8.3 | **Blocked on signing gate (test plan §5).** | Local-validator + mainnet-dust lifecycle; bid-debits-quote / ask-debits-base unit test (spec §11 — "the single most expensive bug available"). |
