@@ -19,6 +19,8 @@
       75,
       75
     ],
+    "expected_active_bin": 100,
+    "max_active_bin_slippage": 1,
     "strategy_type": "Spot"
   },
   "withdraw": {
@@ -40,6 +42,8 @@
     "swap_spec": null,
     "deposit_spec": {
       "pool": "11111111111111111111111111111111",
+      "expected_active_bin": 100,
+      "max_active_bin_slippage": 1,
       "bid_bins": [
         98,
         99

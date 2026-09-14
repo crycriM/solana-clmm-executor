@@ -12,15 +12,19 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
     try {
       const binsEnv = (process.env['LIVE_DEPOSIT_BIN_IDS'] ?? '98,99').split(',').map(Number);
       const depositsEnv = (process.env['LIVE_DEPOSIT_AMOUNTS'] ?? '1,1').split(',').map(Number);
+      const before = await run.client.request({ method: 'get_state', pool: process.env['LIVE_POOL']! });
+      expect(before.ok).toBe(true);
+      const expectedActiveBin = Number((before.data as { active_bin: number }).active_bin);
       const depositRequest = {
         method: 'deposit_single_sided' as const,
         pool: process.env['LIVE_POOL']!,
         side: 'bid' as const,
         bin_ids: binsEnv,
         amounts: depositsEnv,
+        expected_active_bin: expectedActiveBin,
+        max_active_bin_slippage: Number(process.env['LIVE_MAX_ACTIVE_BIN_SLIPPAGE'] ?? 0),
         strategy_type: 'Spot' as const,
       };
-      const before = await run.client.request({ method: 'get_state', pool: depositRequest.pool });
       run.recorder.beforeAfter('wallet', null, before.data);
 
       const deposit = await run.client.request(depositRequest);

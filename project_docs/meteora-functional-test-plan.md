@@ -410,6 +410,7 @@ MINT_ALLOWLIST
 MAX_SOL_PER_TX
 MAX_SOL_PER_RUN
 MAX_SLIPPAGE_BPS
+MAX_ACTIVE_BIN_SLIPPAGE_BINS
 MAX_PRIORITY_FEE_LAMPORTS
 ```
 
@@ -478,6 +479,7 @@ MINT_ALLOWLIST
 MAX_SOL_PER_TX
 MAX_SOL_PER_RUN
 MAX_SLIPPAGE_BPS
+MAX_ACTIVE_BIN_SLIPPAGE_BINS
 MAX_PRIORITY_FEE_LAMPORTS
 JITO_ENABLED
 JITO_BLOCK_ENGINE_URL
@@ -717,6 +719,9 @@ Inject failures through mocked dependencies or a controlled proxy:
 - transaction simulation failure;
 - finalized on-chain transaction failure;
 - slippage breach;
+- active-bin drift at the requested tolerance (accept) and one bin beyond it
+  (atomically reject with no token or position delta), including a race where
+  `activeId` changes after the final RPC preflight;
 - insufficient token balance;
 - insufficient SOL for fees or rent;
 - KMS access denied, throttling, timeout, or disabled key;
@@ -791,6 +796,9 @@ The connector is ready for controlled rollout when all of the following hold:
   fail closed for operator reconciliation.
 - Bid and ask deposits debit the correct token and retain the returned
   authoritative position ID.
+- Deposit readback matches every requested bin in raw units; the built
+  instruction is `addLiquidityOneSidePrecise2`, and active-bin drift beyond
+  `max_active_bin_slippage` fails atomically rather than reshaping the ladder.
 - Failed closes retain enough evidence for reconciliation.
 - Multi-step partial failures are visible and recoverable.
 - Emergency exit removes all test-created exposure.

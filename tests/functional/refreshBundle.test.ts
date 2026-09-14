@@ -14,6 +14,8 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
       const positionId = process.env['LIVE_POSITION_ID'] ?? 'seed-dust';
       const bidBins = (process.env['LIVE_DEPOSIT_BIN_IDS'] ?? '98,99').split(',').map(Number);
       const amounts = (process.env['LIVE_DEPOSIT_AMOUNTS'] ?? '1,1').split(',').map(Number);
+      const state = await run.client.request({ method: 'get_state', pool });
+      expect(state.ok).toBe(true);
       const request: RefreshBundleRequest = {
         method: 'refresh_bundle',
         withdraw_position_id: positionId,
@@ -24,6 +26,8 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
         },
         deposit_spec: {
           pool,
+          expected_active_bin: Number((state.data as { active_bin: number }).active_bin),
+          max_active_bin_slippage: Number(process.env['LIVE_MAX_ACTIVE_BIN_SLIPPAGE'] ?? 0),
           bid_bins: bidBins,
           ask_bins: [],
           bid_amounts: amounts,

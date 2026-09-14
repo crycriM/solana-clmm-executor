@@ -113,6 +113,10 @@ describe('TransactionPolicy', () => {
     rejectRule(() => policy.validate(transfer(), {
       writableAccounts: [recipient], amounts: { maxSlippageBps: config.maxSlippageBps + 1 },
     }), 'slippage_cap');
+    rejectRule(() => policy.validate(transfer(), {
+      writableAccounts: [recipient],
+      amounts: { maxActiveBinSlippage: config.maxActiveBinSlippageBins + 1 },
+    }), 'active_bin_slippage_cap');
 
     const tx = new Transaction({ feePayer: wallet.publicKey, recentBlockhash: BLOCKHASH }).add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: 1 }),

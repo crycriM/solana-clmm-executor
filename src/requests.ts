@@ -18,13 +18,19 @@ function positive(value: unknown): boolean {
 function bps(value: unknown): boolean {
   return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 10000;
 }
+function binId(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= -2_147_483_648 && Number(value) <= 2_147_483_647;
+}
+function binSlippage(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 2_147_483_647;
+}
 function bins(ids: unknown, amounts: unknown, empty = false): boolean {
   return (
     Array.isArray(ids) &&
     Array.isArray(amounts) &&
     ids.length === amounts.length &&
     (empty || ids.length > 0) &&
-    ids.every(Number.isSafeInteger) &&
+    ids.every(binId) &&
     amounts.every(positive)
   );
 }
@@ -56,6 +62,8 @@ export function parseRequest(value: unknown, mintAllowlist: readonly string[]): 
         text(value.pool) &&
         (value.side === 'bid' || value.side === 'ask') &&
         bins(value.bin_ids, value.amounts) &&
+        binId(value.expected_active_bin) &&
+        binSlippage(value.max_active_bin_slippage) &&
         ['Spot', 'Curve', 'BidAsk'].includes(String(value.strategy_type));
       break;
     case 'withdraw':
@@ -71,6 +79,8 @@ export function parseRequest(value: unknown, mintAllowlist: readonly string[]): 
         (value.swap_spec === null || swap(value.swap_spec, mintAllowlist, true)) &&
         object(deposit) &&
         text(deposit.pool) &&
+        binId(deposit.expected_active_bin) &&
+        binSlippage(deposit.max_active_bin_slippage) &&
         bins(deposit.bid_bins, deposit.bid_amounts, true) &&
         bins(deposit.ask_bins, deposit.ask_amounts, true) &&
         (deposit.bid_bins as number[]).length + (deposit.ask_bins as number[]).length > 0;

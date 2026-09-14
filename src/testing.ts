@@ -14,6 +14,7 @@ export function baseEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     MAX_SOL_PER_TX: '0.5',
     MAX_SOL_PER_RUN: '2',
     MAX_SLIPPAGE_BPS: '50',
+    MAX_ACTIVE_BIN_SLIPPAGE_BINS: '3',
     MAX_PRIORITY_FEE_LAMPORTS: '100000',
     SWAP_STREAM_PATH: 'logs/swaps.jsonl',
     ...overrides,
