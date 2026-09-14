@@ -446,6 +446,7 @@ subscription endpoint), SOLANA_COMMITMENT=confirmed
 SOLANA_RPC_MAX_CU_PER_SECOND=240
 WALLET_SIGNER=kms|keypair|file, KMS_KEY_ARN | WALLET_SECRET_ARN | WALLET_KEYPAIR_PATH
 WALLET_PUBKEY (required by the M2 read-only bridge; later also pins/derives from the signer)
+FILE_SIGNER_ALLOW_MAINNET=false (Arm B explicit mainnet override only)
 POOL_ALLOWLIST, MINT_ALLOWLIST
 MAX_SOL_PER_TX, MAX_SOL_PER_RUN, MAX_SLIPPAGE_BPS, MAX_PRIORITY_FEE_LAMPORTS
 JITO_ENABLED, JITO_BLOCK_ENGINE_URL, JITO_TIP_LAMPORTS
@@ -472,6 +473,9 @@ Under `file`, startup additionally fails closed if the keyfile is group- or
 world-readable, is not owned by the running user, sits in a directory looser
 than `0700`, or derives an address other than `WALLET_PUBKEY`. The arm changes
 only where the key lives; §8's transaction policy is identical under both.
+It additionally checks the RPC genesis hash before reading the keyfile and
+refuses mainnet-beta unless `FILE_SIGNER_ALLOW_MAINNET=true` is explicitly set.
+That override is not a substitute for the Arm B host and dust-lifecycle gates.
 
 Until M4 wires signer resolution, M2 requires `WALLET_PUBKEY` explicitly so it
 can read wallet token balances and reject positions owned by another wallet

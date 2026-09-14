@@ -26,6 +26,11 @@ export interface ExecutorConfig {
   walletKeypairPath: string | null;
   /** WALLET_PUBKEY: optional expected address; mandatory pin target for file. */
   walletPubkey: string | null;
+  /**
+   * Arm B is deliberately local/devnet by default.  A mainnet file signer is
+   * an explicit operational decision, never an accidental RPC URL change.
+   */
+  fileSignerAllowMainnet: boolean;
   poolAllowlist: string[];
   mintAllowlist: string[];
   maxSolPerTx: number;
@@ -127,6 +132,7 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
     walletSecretArn: optional(env, 'WALLET_SECRET_ARN') || null,
     walletKeypairPath: optional(env, 'WALLET_KEYPAIR_PATH') || null,
     walletPubkey: optional(env, 'WALLET_PUBKEY') || null,
+    fileSignerAllowMainnet: boolean(env, 'FILE_SIGNER_ALLOW_MAINNET'),
     poolAllowlist: allowlist(env, 'POOL_ALLOWLIST'),
     mintAllowlist: allowlist(env, 'MINT_ALLOWLIST'),
     maxSolPerTx: number(env, 'MAX_SOL_PER_TX'),
@@ -205,6 +211,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         'missing required env var: WALLET_KEYPAIR_PATH (signer=file)',
       );
     }
+    if (config.walletSigner === 'file' && !config.walletPubkey) {
+      throw new ConfigValidationError(
+        'missing required env var: WALLET_PUBKEY (signer=file pin)',
+      );
+    }
   }
   if (config.jitoEnabled && !config.jitoBlockEngineUrl) {
     throw new ConfigValidationError('JITO_ENABLED=true requires JITO_BLOCK_ENGINE_URL');
@@ -226,6 +237,7 @@ function policyRelevant(config: ExecutorConfig): string {
     walletSecretArn: config.walletSecretArn ? hashArn(config.walletSecretArn) : null,
     walletKeypairPath: config.walletKeypairPath ? hashArn(config.walletKeypairPath) : null,
     walletPubkey: config.walletPubkey,
+    fileSignerAllowMainnet: config.fileSignerAllowMainnet,
     poolAllowlist: [...config.poolAllowlist].sort(),
     mintAllowlist: [...config.mintAllowlist].sort(),
     maxSolPerTx: config.maxSolPerTx,

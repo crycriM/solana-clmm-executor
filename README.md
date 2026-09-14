@@ -18,6 +18,9 @@ project stays read-only and never gains signing authority.
 
 M0 scaffolding, M1 wire proof, the offline portion of M2, and the M3 swap
 stream are implemented.
+M4's local file-signer and compiled-transaction policy foundation are present,
+but they are not connected to a write handler yet. The production executable
+continues to reject `DRY_RUN=false`.
 The production executable requires `DRY_RUN=true`: `get_state` and
 `get_position` are live read-only Meteora/RPC calls, while the four write verbs
 remain gated until the M4 signing gate. The stream decodes confirmed DLMM

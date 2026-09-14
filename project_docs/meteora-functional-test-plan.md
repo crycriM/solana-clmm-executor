@@ -488,6 +488,10 @@ configuration.
 requires `WALLET_SECRET_ARN` (§5.4), `file` requires `WALLET_KEYPAIR_PATH`
 (§5.5). `WALLET_PUBKEY` is optional under arms A and the Secrets Manager
 fallback, and expected under arm B, where it pins which keyfile is legitimate.
+The implementation defaults Arm B to local-validator/devnet: it checks the
+connected chain's genesis hash before loading the file and rejects mainnet-beta
+unless `FILE_SIGNER_ALLOW_MAINNET=true` is deliberately set. That setting is
+permitted only after the §5.5 host-precondition and dust-lifecycle gates.
 
 The private key or seed must never be a test environment variable. Under arm B
 the *path* is configuration; the file contents are not, and must never be
