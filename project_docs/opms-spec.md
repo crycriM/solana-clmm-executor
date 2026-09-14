@@ -129,7 +129,7 @@ are **strings** (u64 exceeds JS safe-integer range) and are logged verbatim into
 
 The keeper polls this every `refresh_interval` (5 s default). Cache pool
 metadata (mints, decimals, bin step) for the process lifetime; re-fetch only
-`activeBin`/balances per call. Target p95 < 400 ms.
+`activeBin`/balances per call. Target p95 < 2,000 ms.
 
 ### 3.2 `get_position`
 

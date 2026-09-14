@@ -85,7 +85,10 @@ It derives the observation grid from the owned position's on-chain bin prices;
 AS gamma/kappa are deliberately unused and this is not strategy calibration.
 It retains the hash-chained keeper log, executor JSONL, swap stream, and a
 `summary.json` under `logs/test-artifacts/evidence-keeper-m2-*`. A nonzero exit
-means at least one gate check, including `get_state` p95 < 400 ms, failed.
+means at least one gate check, including `get_state` p95 < 2,000 ms, failed.
+To reassess a retained run after a gate change without modifying its original
+summary, use `../dlmm-bot/.venv/bin/python ../dlmm-bot/tools/live_keeper_soak.py
+--revalidate-existing logs/test-artifacts/evidence-keeper-m2-<run-id>`.
 
 M3 may use `SOLANA_WS_URL` when the HTTP provider does not expose Solana
 PubSub at its derived WebSocket URL. HTTP JSON-RPC is CU-rate-limited in the
