@@ -101,7 +101,7 @@ It must not expose a general-purpose "sign arbitrary transaction" endpoint.
 - JSON-lines stdio framing, ordering, lifecycle, and error handling.
 - Verb and parameter validation.
 - Meteora SDK request construction.
-- Exact per-bin single-sided placement and position readback.
+- Weighted per-bin single-sided placement and authoritative position readback.
 - Secure Solana signing.
 - Solana RPC submission and confirmation.
 - Position, token balance, fee, and transaction reconciliation.
@@ -124,6 +124,9 @@ It must not expose a general-purpose "sign arbitrary transaction" endpoint.
 - Selective per-bin removal. V1 `withdraw` removes a percentage of the
   position, not a caller-selected subset of bins.
 - Dedicated owned-position discovery and transaction-status query verbs.
+- Reward-enabled pools and Token-2022 transfer-hook tokens. The first native
+  deposit/withdraw gate rejects them until reward/hook remaining accounts are
+  explicitly represented and policy-bound.
 
 ## 4. Test environments
 
@@ -493,6 +496,21 @@ The test runner may additionally require `LIVE_WRITE_CONFIRM=yes` and a test
 run ID. These guard the harness only and are not gateway protocol or policy
 configuration.
 
+The M4 lifecycle runner uses `LIVE_DEPOSIT_SIDE`,
+`LIVE_DEPOSIT_BIN_OFFSETS`, `LIVE_DEPOSIT_AMOUNTS`, and
+`LIVE_MAX_ACTIVE_BIN_SLIPPAGE`. Offsets are contiguous and interpreted against
+the active bin read immediately before the deposit: bid offsets must be
+negative, while ask offsets must be zero or positive. This avoids stale,
+hard-coded absolute bin IDs in a live write campaign. `npm run test:live:m4`
+sets a separate `RUN_LIVE_M4=1` collection flag and fails before starting the
+subprocess when any guard or campaign value is absent. M5 swap/refresh tests
+require a different `RUN_LIVE_M5=1` switch.
+
+The sourceable, non-secret key list is maintained in `.env.example`. Copy it
+to ignored `.env.test.write`, replace every placeholder, review the funding and
+rent caps, build with `npm run build`, source the file, and run
+`npm run test:live:m4`. No Cargo command appears in this workflow.
+
 `WALLET_SIGNER` selects the arm: `kms` requires `KMS_KEY_ARN` (§5.1), `keypair`
 requires `WALLET_SECRET_ARN` (§5.4), `file` requires `WALLET_KEYPAIR_PATH`
 (§5.5). `WALLET_PUBKEY` is optional under arms A and the Secrets Manager
@@ -614,10 +632,13 @@ quote-only deposits.
 
 ### 8.4 Per-bin placement and readback
 
-1. Place liquidity into an exact list of bins with known amounts.
-2. Query the position and verify each bin and amount independently.
+1. Submit a known target allocation across an explicit list of bins and verify
+   its normalized target BPS sum to 10,000.
+2. Query the position and record the realized raw amount in every requested
+   bin. Treat this readback—not the target vector—as authoritative.
 3. Add a second single-sided deposit and verify it returns the same position ID
-   and the expected updated bin amounts.
+   and updates only the intended range. Compare the realized distribution with
+   documented rounding and price-conversion tolerances.
 4. Verify bid amounts debit quote and ask amounts debit base.
 5. Verify boundary bins and the maximum supported bin span.
 6. Reject duplicate bins, non-contiguous or unsorted bins, bins crossing the
@@ -747,6 +768,8 @@ resulting `position_id`; it must not be reported as a successful atomic bundle.
 - Allow-list one pool for the first campaign.
 - Fund only the maximum approved test budget plus known fees and rent.
 - Require `DRY_RUN=false` and `LIVE_WRITE_CONFIRM=yes` in the test runner.
+- Run only `npm run test:live:m4` for the dust lifecycle; do not collect the
+  still-disabled M5 swap/refresh suites.
 - Print the exact operation, pool, bin range, amounts, maximum spend, expected
   rent, and wallet before signing.
 - Assign a unique test run ID and preserve the executor `req_seq`, message
@@ -784,8 +807,9 @@ The connector is ready for controlled rollout when all of the following hold:
 - Live pool reads complete 20 out of 20 cycles successfully.
 - Every successful mutation returns a signature that reaches the configured
   commitment; full withdrawal/closure reaches finalized status.
-- Wallet, position, and per-bin state match the requested operation within
-  token precision and known fee tolerances.
+- Wallet and position state match the requested operation within token
+  precision and known fee tolerances; realized per-bin state is compared with
+  the weighted target using documented rounding/price-conversion tolerances.
 - Out-of-policy transactions never reach the signer, under either arm.
 - Signer failure paths fail closed: KMS denial and timeout under arm A; missing,
   unreadable, over-permissive, or pin-mismatched keyfile under arm B.
@@ -796,9 +820,12 @@ The connector is ready for controlled rollout when all of the following hold:
   fail closed for operator reconciliation.
 - Bid and ask deposits debit the correct token and retain the returned
   authoritative position ID.
-- Deposit readback matches every requested bin in raw units; the built
-  instruction is `addLiquidityOneSidePrecise2`, and active-bin drift beyond
-  `max_active_bin_slippage` fails atomically rather than reshaping the ladder.
+- Deposit readback covers every requested bin; the built instruction is native
+  Meteora `addLiquidityOneSide`, its total raw debit is bounded by
+  `sum(amounts)`, and its decoded integer active-bin fields match the request.
+  Drift beyond `max_active_bin_slippage` fails atomically with no token or
+  position delta. A zero-bin tolerance must remain zero and must not inherit
+  the pinned SDK wrapper's default.
 - Failed closes retain enough evidence for reconciliation.
 - Multi-step partial failures are visible and recoverable.
 - Emergency exit removes all test-created exposure.
@@ -831,6 +858,10 @@ The connector is ready for controlled rollout when all of the following hold:
 12. Validate replay, receipt fidelity, and swap-stream completeness.
 13. Archive evidence, clean up all test state, drain the wallet, and disable
     signing until the next approved campaign.
+
+No delivery step builds or deploys a custom Solana program. The M4 path is
+TypeScript plus Meteora's deployed native instructions, so Cargo and
+`cargo build-sbf` are not prerequisites.
 
 Authenticated HTTP transport, intents, stronger server-side campaign windows,
 selective per-bin removal, and limit-order verbs are phase-2 specification work

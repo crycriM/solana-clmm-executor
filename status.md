@@ -1,44 +1,51 @@
 # solana-clmm-executor status
 
-**Status date:** 2026-09-14
+**Status date:** 2026-09-15
 **Scope:** The Solana DLMM OPMS "body": signing authority for the LP wallet,
 verb → Meteora/Jupiter/Jito execution, receipts, swap stream. Companion brain:
 `../dlmm-bot` (see its `status.md`). Spec:
 `project_docs/opms-spec.md` (source of truth: `src/protocol.ts`).
 
-**Repository note:** `HEAD` is still the initial scaffold commit. The M0–M3
-implementation, tests, project docs, and this ledger are currently working-tree
-changes and have not been committed. The companion `dlmm-bot` and `mm-core`
-repositories also have separate working-tree changes; this audit did not modify
-their unrelated work. The 2026-09-14 deposit-contract amendment updates
-`dlmm-bot`'s keeper/bridge request fields and the legacy Gateway bridge surface
-in lockstep with this executor.
+**Repository note:** `HEAD` is `8662f9e` (2026-09-14, "Add active bin slippage
+protection for deposits"). The M0–M3 milestones are committed; the M4
+weighted-deposit layer, its modules and tests, the amended project docs, and
+this ledger are currently working-tree changes and are not yet committed. The
+2026-09-14 deposit-contract amendment updated `dlmm-bot`'s keeper/bridge
+request fields and the legacy Gateway bridge surface in lockstep with this
+executor; the 2026-09-15 weighted-deposit rework is a separate, uncommitted
+change. The companion `dlmm-bot` and `mm-core` repositories also have separate
+working-tree changes; this audit did not modify their unrelated work. The
+standalone `programs/active-bin-guard` Rust project was removed: active-bin
+enforcement now comes from Meteora's native `addLiquidityOneSide` instruction,
+so no custom Rust program or Solana/Rust toolchain is required.
 
-Evidence ledger. **M0/M1 are verified locally; M2's keeper observation run is
-complete but its live latency gate failed; M3 is green offline, cross-language,
-and on a 30-minute mainnet live gate.** The production
-bridge requires
-`DRY_RUN=true`; its two read verbs use live RPC/Meteora data and its four write
-verbs remain gated. Its read-only swap subscription writes decoded events at
-the configured commitment to `SWAP_STREAM_PATH`. No simulation or signing is
-wired in. M3 has a qualifying mainnet gate run; M2's keeper-read gate remains
-pending. A separate mainnet `get_state` smoke read succeeded; the public-RPC
-repetition below is explicitly non-gating.
+Evidence ledger. **M0/M1 are verified locally; M2's keeper-read gate passed
+under the revised strict <2,000 ms p95 limit; M3 is green offline,
+cross-language, and on a 30-minute mainnet live gate.** M4 deposit/withdraw is
+now wired in the production bridge when `DRY_RUN=false`, with policy,
+simulation, signing, receipts, finalized full-close, and ambiguous readback
+handling. This is implementation evidence only: the signed dust lifecycle has
+not been run, so M4 is not gate-passed. `DRY_RUN=true` still loads no signer
+and uses live RPC/Meteora reads plus visibly synthetic write stubs. `swap` and
+`refresh_bundle` remain disabled. M2's earlier 30-minute soak failed the former 400 ms target at
+2,515 ms p95; the 2026-09-14 observation-only rerun measured 1,851 ms p95 and
+passes gate 2 as separately revalidated. A separate mainnet `get_state` smoke
+read succeeded; the public-RPC repetition below is explicitly non-gating.
 
 ## Bottom line
 
 | Area | Status | What exists | What is still needed |
 |---|---|---|---|
-| Spec (`opms-spec.md`) | **Complete, reviewed 2026-09-14** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. The deposit contract distinguishes exact Precise2 profiles from weighted one-sided deposits and carries explicit expected-active-bin/slippage fields. | Keep in lockstep with `protocol.ts` on every change. |
+| Spec (`opms-spec.md`) | **Complete, amended 2026-09-15** | 11 sections: role, transport, 6 verbs, receipt envelope, lp-monitor reuse, swap stream, logging, signing policy, config, build order, conformance. Deposit amounts are weighted target allocations with an aggregate debit ceiling; native Meteora active-bin fields protect execution atomically. | Keep in lockstep with `protocol.ts` on every change. |
 | Wire types (`src/protocol.ts`) | **Present, reviewed** | Requests, `ExecResponse`, `TxReceipt`, verb `data` shapes, `SwapStreamRow`, handler surface. Direct and refresh deposits require `expected_active_bin` plus `max_active_bin_slippage`; TS/Python/Gateway bridge surfaces and fixtures are synchronized. | Commit the reviewed contract with the rest of the implementation when ready. |
-| Runtime (`bridge.ts` … `log.ts`) | **M2/M3 gates complete** | M2 live reads plus finalized DLMM event-CPI decode, append-only swap JSONL, CU-limited RPC, durable cursors, history/slot backfill, and gap audit. | Keep write handlers gated. |
-| Signing / policy | **M4 foundation started; writes remain gated** | `signer.ts` supports the hardened Arm B file signer: public-key pin, file/parent permissions, and an RPC-genesis guard that rejects mainnet before reading the key unless `FILE_SIGNER_ALLOW_MAINNET=true`. `policy.ts` validates compiled legacy/v0 transactions before signing, including a separate active-bin-slippage cap; `transactions.ts` owns blockhash → policy → unsigned simulation → reservation → sign → submit → receipt. `deposit.ts` rejects malformed, stale and cross-active ladders and checks bid→quote / ask→base balances using decimal arithmetic; `preciseDeposit.ts` encodes decimal amounts as exact raw-u32-compressed IDL bins with no rounding. | Resolve the atomic active-bin guard for Precise2, then wire these seams into the real builder and prove raw per-bin readback. Complete Arm B host gate and local-validator lifecycle. The production bridge remains `DRY_RUN=true`; no M4 write path is enabled. |
+| Runtime (`bridge.ts` … `log.ts`) | **M2/M3 gates complete; M4 handlers selected in write mode** | M2 live reads plus finalized DLMM event-CPI decode, append-only swap JSONL, CU-limited RPC, durable cursors, history/slot backfill, and gap audit. With `DRY_RUN=false`, the bridge resolves the configured signer and selects M4 deposit/withdraw; M5 verbs fail closed. | Prove the manual M4 dust gate before rollout; keep M5 disabled. |
+| Signing / policy | **M4 deposit/withdraw implemented; live gate pending** | `signer.ts` supports the hardened Arm B file signer and KMS arm. `transactions.ts` owns blockhash → policy → unsigned simulation → reservation → sign → submit → receipt and preserves deterministic signatures across ambiguous RPC acknowledgements. Native weighted deposits and percentage withdrawals are compiled from trusted inputs, bound by policy, and reconciled from chain state; full closes force finalized commitment. Reward-enabled pools and transfer-hook tokens fail closed in this first gate. The discarded custom Rust guard was removed; no Rust toolchain is required. | Run weighted per-bin readback plus the active-bin boundary/race matrix and complete the selected signer/host gate. Archive a clean `npm run test:live:m4` artifact before treating M4 as passed. |
+| Swap stream | **Gate passed 2026-09-10** | Spec §6: pool `logsSubscribe` → event-CPI decode → append-only `SWAP_STREAM_PATH` JSONL → `JsonlSwapEventSource` → `observed_trade`/`bin_fill`. CU-limited reads plus slot/history recovery with explicit completeness state. | Operational monitoring only. |
+| Live evidence | **M2 and M3 read-only gates passed.** | M3 retained a 30-minute mainnet capture: 386 unique swaps, 15 owned-position bin fills, structural and independent chain completeness green. M2's 2026-09-14 read-only keeper run logged 168 state/position pairs with zero failed reads or writes; p95 was 1,851 ms, below the revised 2,000 ms limit. | Monitor RPC-tail latency; calibrate strategy before shadow deployment. |
 
 `MAX_PRIORITY_FEE_LAMPORTS` is enforced as the complete priority fee, not as a
 CU price: `ceil(price_micro_lamports * explicit_CU_limit / 1_000_000)`.
 Nonzero prices without exactly one explicit compute-unit limit are rejected.
-| Swap stream | **Gate passed 2026-09-10** | Spec §6: pool `logsSubscribe` → event-CPI decode → append-only `SWAP_STREAM_PATH` JSONL → `JsonlSwapEventSource` → `observed_trade`/`bin_fill`. CU-limited reads plus slot/history recovery with explicit completeness state. | Operational monitoring only. |
-| Live evidence | **M2 and M3 read-only gates passed.** | M3 retained a 30-minute mainnet capture: 386 unique swaps, 15 owned-position bin fills, structural and independent chain completeness green. M2's 2026-09-14 read-only keeper run logged 168 state/position pairs with zero failed reads or writes; p95 was 1,851 ms, below the revised 2,000 ms limit. | Monitor RPC-tail latency; calibrate strategy before shadow deployment. |
 
 ## Gate ledger (build order, spec §10 + test plan)
 
@@ -48,7 +55,7 @@ Nonzero prices without exactly one explicit compute-unit limit are rejected.
 | 1 | `bridge.ts` + stub `handlers.ts`; dlmm-bot suite passes against real subprocess in place of `FakeExecBridge` | **Passed locally, reverified 2026-09-14.** | `npm run check:m1`: 233 executor unit tests plus 192 Python tests through both fake and subprocess bridges. |
 | 2 | `get_state` + `get_position` read-only; keeper dry-run on mainnet populates `state_observation` / `position_observation` incl. `claimable_fee_*_raw` | **Passed under revised <2,000 ms p95 limit.** | Retained 30-minute keeper run revalidated separately; original <400 ms-era summary remains unchanged. |
 | 3 | `swapStream.ts`; `observed_trade`/`bin_fill` events appear; `verify_log.py` completeness passes | **Passed offline + live, 2026-09-10.** | Read-only 30-minute mainnet tail: 386 unique swaps, 15 owned-position fills, zero missing/extra chain swaps. |
-| 4 | `policy.ts` + `signer.ts` + `deposit_single_sided`/`withdraw`; dust lifecycle per test plan §8.3 | **Blocked on signing gate (test plan §5).** | Local-validator + mainnet-dust lifecycle; bid-debits-quote / ask-debits-base unit test (spec §11 — "the single most expensive bug available"). |
+| 4 | `policy.ts` + `signer.ts` + `deposit_single_sided`/`withdraw`; dust lifecycle per test plan §8.3 | **Implemented and offline-tested; signed gate pending (test plan §5).** | Selected signer/host gate plus mainnet-dust lifecycle artifact; separately exercise bid-debits-quote and ask-debits-base on chain. |
 | 5 | `swap`, then `refresh_bundle` (Jito bundle + sequential fallback with `data.stage`) | **Not started; last.** | Receipt-fidelity test: `sum(fee_lamports)` equals on-chain fees fetched independently. |
 
 ## Relationship ledger
@@ -127,8 +134,9 @@ npm run check:m2
 ```
 
 On 2026-09-10, build, typecheck, lint, and **173 TS tests** passed, followed by
-**172 Python tests** through `--executor-subprocess`. No passing live
-read/keeper gate is recorded, so gate 2 is intentionally not marked passed.
+**172 Python tests** through `--executor-subprocess`. Gate 2 is marked passed on
+the 2026-09-14 observation-only keeper run (p95 1,851 ms); see the reassessed
+evidence below.
 
 A non-gating production smoke used the public mainnet RPC and an allow-listed
 pool selected from Meteora's pool API. One cold `get_state` completed
@@ -255,6 +263,16 @@ no orphan/crossed-without-fill errors. Evidence:
 `logs/test-artifacts/artifact-swapStream-m3-live-slot-recovery-30m-20260910.json`
 and its referenced evidence directory.
 
+On 2026-09-15 the Rust-free M4 implementation passed `npm run build`, full test
+typechecking, ESLint, and **326 offline TypeScript tests across 30 files**. The
+active `dlmm-bot` subprocess consumer then passed **192 Python tests** with
+`--executor-subprocess`. These results cover native instruction encoding,
+deterministic account preparation, compiled policy bindings, signer/submission
+failure behavior, receipts, and cross-language wire conformance. They are not
+on-chain write evidence.
+
+The repeatable combined offline command is `npm run check:m4`.
+
 ## From here
 
 1. Monitor the upstream RPC/price tail against the revised <2,000 ms p95 gate;
@@ -263,16 +281,12 @@ and its referenced evidence directory.
 2. Complete the Arm B §5.5 host prerequisites and run a no-write local-validator
    signer probe. The file signer is local/devnet-only by default; do not set
    `FILE_SIGNER_ALLOW_MAINNET=true` during this step.
-3. Implement the DLMM 1.5 exact-per-bin builder before deposit: its documented
-   public strategy APIs accept only range totals, while the keeper protocol
-   specifies per-bin amounts. Lift the SDK's own internal
-   `addLiquidityOneSidePrecise2` IDL construction into a reviewed local helper,
-   including compressed-amount rounding and account metas, and add a readback
-   test.
-4. Then wire the compiled-policy decision, simulation result, message hash and
-   signer identity into real M4 deposit/withdraw handlers and run the
-   bid-debits-quote / ask-debits-base local-validator lifecycle gate. M5 stays
-   last.
+3. Copy and review `.env.example`, fund only a dedicated dust wallet, and run
+   `npm run test:live:m4`. Retain the weighted readback, partial withdrawal,
+   finalized close, receipt, and cleanup artifact.
+4. Repeat the live lifecycle separately for bid-debits-quote and
+   ask-debits-base, then exercise the active-bin boundary/race matrix. M5 stays
+   disabled and last.
 
 The configured M2/M3 environment holds only the public wallet address and an
 owned existing position. It now supports the opt-in, read-only M4

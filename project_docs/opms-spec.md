@@ -186,16 +186,18 @@ Request:
   the absolute ladder; `max_active_bin_slippage` is a non-negative tolerance in
   **bins**, not basis points. Exceeding it returns
   `active_bin_slippage_exceeded` and must leave tokens and position unchanged.
-- Exact `amounts[i]` make `strategy_type` audit metadata only; it does not alter
-  the distribution and is not passed to a strategy builder.
-- The executor must use Meteora `addLiquidityOneSidePrecise2` (or a
-  deployed-IDL-compatible precise successor), whose compressed bin amounts
-  reconstruct each requested raw amount exactly. `addLiquidityOneSide` accepts
-  `activeId`/`maxActiveBinSlippage` but only a total plus u16 weights, so it is
-  not an implementation of this verb. Because the pinned precise ABI does not
-  itself carry the active-bin fields, execution additionally requires an
-  atomic on-chain active-bin guard in the same transaction; an RPC preflight
-  alone is insufficient.
+- `amounts[i]` are target allocations, not exact realized per-bin deposits.
+  Their sum is the maximum side-token debit and their proportions are
+  normalized to a 10,000-bps target profile. `strategy_type` is audit metadata
+  only; explicit targets determine the profile.
+- The executor must use Meteora's native `addLiquidityOneSide` instruction with
+  a total raw amount, a derived u16 weight distribution, and the request's
+  integer `activeId`/`maxActiveBinSlippage`. Build the low-level instruction
+  directly: the pinned SDK wrapper treats zero slippage as its default rather
+  than zero bins. Meteora may round or price-adjust the realized per-bin
+  balances, so `get_position` is authoritative after confirmation. No custom
+  Rust guard program is required; active-bin enforcement occurs atomically in
+  the native Meteora instruction.
 - Response must carry `position_id` (the position NFT/PDA) — the keeper stores
   it as `_current_position_id` and every later verb and `position_observation`
   depends on it. A successful deposit without `position_id` is a protocol
@@ -203,6 +205,9 @@ Request:
 - Second and later deposits on the same live position add liquidity rather than
   opening a new one; return the *same* `position_id` (the keeper logs the
   second call as `position_liquidity_added`).
+- V1 fails closed on reward-enabled pools and side tokens with Token-2022
+  transfer hooks. Their additional claim/hook accounts are deferred until the
+  protocol and compiled-transaction policy bind them explicitly.
 
 ### 3.4 `withdraw`
 
@@ -297,7 +302,7 @@ Rules, all of them load-bearing for the log:
 2. `fee_lamports` comes from the **confirmed transaction receipt**
    (`getTransaction(...).meta.fee`), not from an estimate.
 3. Never return `ok:true` before confirmation at the configured commitment
-   (`confirmed` minimum; `finalized` for withdraw/close). An optimistic ok makes
+   (`confirmed` minimum; `finalized` for a full withdraw/close). An optimistic ok makes
    `verify_log.py` §6.1 fail against chain state.
 4. Ambiguous submission (timeout after send): poll the signature to resolution
    before responding. If still unknown after the deadline, return `ok:false`,
@@ -482,13 +487,18 @@ shares one token bucket across read/retry connections. The default reserves
 20% headroom below the 300 CU/s free-tier limit; deployments may lower it when
 other applications share the same Alchemy account.
 
-`DRY_RUN=true` builds, validates, and simulates every transaction but never
-signs; it returns a well-formed envelope with `data.dry_run:true`, synthetic
-signatures prefixed `dryrun_`, and `fee_lamports` from the simulation estimate.
+`DRY_RUN=true` loads no signer. In the current M2/M3 production mode it performs
+live reads and returns visibly marked synthetic write stubs; it does not claim
+that those write transactions were built or simulated. `DRY_RUN=false` selects
+the policy-bound M4 deposit/withdraw handlers; unsupported M5 write verbs fail
+closed.
 The keeper has its own `cfg.dry_run` that short-circuits earlier; both must
 exist so the executor can be exercised standalone.
 
 Startup fails closed if the signer, the RPC, or the allow-lists are missing.
+For deposits, policy decodes the native Meteora instruction and verifies its
+pool, position, side-token debit ceiling, expected active bin, and capped
+integer tolerance before signing.
 
 `WALLET_SIGNER` selects the deployment arm of test plan §5: `kms` for the cloud
 arm, `file` for a local server holding the keypair on disk (test plan §5.5).

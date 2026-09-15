@@ -4,7 +4,9 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Readable, Writable } from 'node:stream';
 import { ConfigValidationError, loadConfig, policyHash, type ExecutorConfig } from './config.js';
-import { createReadHandlers, STUB_WALLET } from './handlers.js';
+import { createM4Handlers, createReadHandlers, STUB_WALLET, type WriteAuditContext } from './handlers.js';
+import { TransactionPolicy } from './policy.js';
+import { createConfiguredSigner } from './signer.js';
 import {
   ExecutorLog,
   initLogger,
@@ -39,8 +41,10 @@ export interface BridgeOptions {
   input?: Readable;
   output?: Writable;
   reportError?: (detail: string) => void;
-  handlerMode?: 'stub' | 'm2';
+  handlerMode?: 'stub' | 'm2' | 'm4';
   readAuditContext?: () => ReadAuditContext;
+  /** M4 write audits; only consulted for the two wired write verbs. */
+  writeAuditContext?: () => WriteAuditContext | undefined;
   /**
    * Swap stream lifecycle. `start` is awaited after `executor_started`;
    * `stop` runs in the finally block. Injected so tests never open a socket.
@@ -64,6 +68,7 @@ export async function runBridge({
   reportError = logError,
   handlerMode = 'stub',
   readAuditContext,
+  writeAuditContext,
   swapStream,
 }: BridgeOptions): Promise<number> {
   const lines = createInterface({ input, crlfDelay: Infinity });
@@ -114,10 +119,11 @@ export async function runBridge({
         }
       }
       const responded = Date.now();
+      const isReadVerb = method === 'get_state' || method === 'get_position';
       const readAudit =
-        handlerRan && handlerMode === 'm2' && (method === 'get_state' || method === 'get_position')
-          ? readAuditContext?.()
-          : undefined;
+        handlerRan && handlerMode !== 'stub' && isReadVerb ? readAuditContext?.() : undefined;
+      const writeAudit =
+        handlerRan && handlerMode === 'm4' && !isReadVerb ? writeAuditContext?.() : undefined;
       const entry: VerbLine = {
         kind: 'verb',
         req_seq: ++seq,
@@ -134,26 +140,42 @@ export async function runBridge({
         response: response as unknown as Json,
         attempt: readAudit?.attempt ?? 1,
         rpc_endpoint:
-          handlerRan &&
-          handlerMode === 'm2' &&
-          (method === 'get_state' || method === 'get_position')
+          handlerRan && handlerMode !== 'stub' && isReadVerb
             ? (readAudit?.rpcEndpoint ?? config.rpcReadUrl)
             : null,
-        blockhash: null,
-        simulation_ok: null,
+        blockhash: writeAudit?.blockhash ?? null,
+        simulation_ok: writeAudit?.simulationOk ?? null,
+        ...(writeAudit?.simulationLogs === undefined
+          ? {}
+          : { simulation_logs: writeAudit.simulationLogs }),
         policy_decision:
-          handlerMode === 'm2'
-            ? handlerRan && (method === 'get_state' || method === 'get_position')
-              ? 'read_only'
-              : handlerRan
-                ? 'stub'
+          handlerMode === 'm4'
+            ? handlerRan
+              ? isReadVerb
+                ? 'read_only'
+                : (writeAudit?.policyDecision ?? null)
+              : null
+            : handlerMode === 'm2'
+              ? handlerRan
+                ? isReadVerb
+                  ? 'read_only'
+                  : 'stub'
                 : null
-            : 'stub',
-        signer_id: null,
+              : 'stub',
+        signer_id: writeAudit?.signerId ?? null,
         bundle_id: null,
       };
       try {
         log.write(entry);
+        if (writeAudit?.policyDecision === 'rejected' && writeAudit.policyRule) {
+          log.write({
+            kind: 'policy_rejected',
+            ts: responded / 1000,
+            method,
+            rule: writeAudit.policyRule,
+            detail: 'compiled transaction rejected by policy',
+          });
+        }
       } catch {
         response = errorResponse('internal_error', 'Executor audit log unavailable');
         fatal = true;
@@ -187,23 +209,53 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
   let log: ExecutorLog | undefined;
   try {
     const config = loadConfig();
-    if (!config.dryRun) throw new ConfigValidationError('M2 executor requires DRY_RUN=true');
-    if (!injectedHandlers && !config.walletPubkey) {
+    // Injected handler sets are offline fixtures; only the production path may
+    // resolve a signer, so a fixture can never be mistaken for a write run.
+    if (injectedHandlers && !config.dryRun) {
+      throw new ConfigValidationError('injected fixture handlers require DRY_RUN=true');
+    }
+    if (!injectedHandlers && config.dryRun && !config.walletPubkey) {
       throw new ConfigValidationError('M2 live reads require WALLET_PUBKEY');
     }
     log = new ExecutorLog(config, newRunId());
     initLogger(config.executorLogDir);
     const require = createRequire(import.meta.url);
     const sdk = require('@meteora-ag/dlmm/package.json') as { version: string };
+    // Write mode resolves the signer first: the file-signer network guard and
+    // the WALLET_PUBKEY pin must fail before any read or write can start.
+    const writeConnection = !injectedHandlers && !config.dryRun
+      ? getSolanaConnection(config, { write: true })
+      : undefined;
+    const signer = writeConnection
+      ? await createConfiguredSigner(config, writeConnection)
+      : undefined;
+    if (signer && config.walletPubkey && signer.publicKey.toBase58() !== config.walletPubkey) {
+      throw new ConfigValidationError('loaded signer does not match WALLET_PUBKEY');
+    }
     const wallet = injectedHandlers
       ? new PublicKey(STUB_WALLET)
-      : new PublicKey(config.walletPubkey!);
+      : signer?.publicKey ?? new PublicKey(config.walletPubkey!);
     const reads = injectedHandlers
       ? undefined
       : new MeteoraReads(config, wallet, {
           audit: (line) => log!.write(line),
         });
-    const handlers = injectedHandlers ?? createReadHandlers(reads!);
+    let handlers: ExecHandlers;
+    let writeAuditContext: (() => WriteAuditContext | undefined) | undefined;
+    if (injectedHandlers) {
+      handlers = injectedHandlers;
+    } else if (signer && writeConnection) {
+      const m4 = createM4Handlers(reads!, {
+        connection: writeConnection,
+        signer,
+        policy: new TransactionPolicy(config, signer.publicKey),
+        commitment: config.commitment,
+      });
+      handlers = m4;
+      writeAuditContext = () => m4.writeAudit();
+    } else {
+      handlers = createReadHandlers(reads!);
+    }
     log.write({
       kind: 'executor_started',
       ts: Date.now() / 1000,
@@ -218,18 +270,21 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
       mint_allowlist: config.mintAllowlist,
       wallet_pubkey: wallet.toBase58(),
       policy_hash: policyHash(config),
-      dry_run: true,
+      dry_run: config.dryRun,
       run_counter_note: injectedHandlers
         ? 'test fixture: injected handlers; no RPC, simulation, or signing'
-        : 'M3: live reads + decoded swap stream; write verbs remain gated; no signer loaded',
+        : config.dryRun
+          ? 'M3: live reads + decoded swap stream; write verbs remain gated; no signer loaded'
+          : 'M4: policy-bound deposit/withdraw wired; M5 swap/refresh_bundle gated',
     });
     const stream = injectedHandlers ? undefined : await startSwapStream(config, reads!, log);
     return await runBridge({
       config,
       handlers,
       log,
-      handlerMode: injectedHandlers ? 'stub' : 'm2',
+      handlerMode: injectedHandlers ? 'stub' : config.dryRun ? 'm2' : 'm4',
       readAuditContext: reads ? () => reads.auditContext() : undefined,
+      ...(writeAuditContext === undefined ? {} : { writeAuditContext }),
       ...(stream === undefined ? {} : { swapStream: stream }),
     });
   } catch (error) {

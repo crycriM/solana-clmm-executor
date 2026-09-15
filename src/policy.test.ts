@@ -1,6 +1,7 @@
 import {
   ComputeBudgetProgram,
   Keypair,
+  PublicKey,
   SystemProgram,
   Transaction,
   TransactionInstruction,
@@ -8,8 +9,13 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+} from '@solana/spl-token';
 import { loadConfig } from './config.js';
 import { PolicyRejected, TransactionPolicy } from './policy.js';
+import { buildAddLiquidityOneSideInstruction } from './dlmmWeighted.js';
+import { deriveWeightedDepositAddresses } from './dlmmAccounts.js';
 import { baseEnv, TEST_BASE_MINT, TEST_POOL } from './testing.js';
 
 const BLOCKHASH = '11111111111111111111111111111111';
@@ -164,6 +170,60 @@ describe('TransactionPolicy', () => {
     });
     expect(decision.messageHash).toMatch(/^[a-f0-9]{64}$/);
   });
+
+  it('binds the decoded native deposit accounts and payload before signing', () => {
+    const { policy, wallet } = fixture();
+    const reserve = Keypair.generate().publicKey;
+    const tokenProgram = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+    const tokenMint = new PublicKey(TEST_BASE_MINT);
+    const addresses = deriveWeightedDepositAddresses({
+      pool: new PublicKey(TEST_POOL), wallet: wallet.publicKey,
+      lowerBinId: 98, upperBinId: 99, tokenMint, tokenProgram, reserve,
+    });
+    const weights = [{ binId: 98, weight: 32_767 }, { binId: 99, weight: 32_767 }];
+    const instruction = buildAddLiquidityOneSideInstruction({
+      position: addresses.position, lbPair: new PublicKey(TEST_POOL), userToken: addresses.userToken,
+      reserve, tokenMint,
+      binArrayLower: addresses.lowerBinArray, binArrayUpper: addresses.upperBinArray,
+      sender: wallet.publicKey, tokenProgram,
+    }, { amount: 150n, activeId: 100, maxActiveBinSlippage: 0, binLiquidityDist: weights });
+    const tx = new Transaction({ feePayer: wallet.publicKey, recentBlockhash: BLOCKHASH }).add(
+      createAssociatedTokenAccountIdempotentInstruction(
+        wallet.publicKey, addresses.userToken, wallet.publicKey, tokenMint,
+      ),
+      instruction,
+    );
+    const expected = {
+      position: addresses.position, pool: TEST_POOL, userToken: addresses.userToken, reserve,
+      tokenMint: TEST_BASE_MINT,
+      binArrayLower: addresses.lowerBinArray, binArrayUpper: addresses.upperBinArray,
+      tokenProgram,
+      positionLowerBinId: addresses.positionLowerBinId, positionWidth: addresses.positionWidth,
+      lowerBinArrayIndex: addresses.lowerBinArrayIndex,
+      upperBinArrayIndex: addresses.upperBinArrayIndex,
+      amountRaw: 150n, activeId: 100, maxActiveBinSlippage: 0, weights,
+    };
+    const writableAccounts = [
+      addresses.position, addresses.userToken, reserve,
+      addresses.lowerBinArray, addresses.upperBinArray,
+    ];
+    expect(() => policy.validate(tx, {
+      writableAccounts, pools: [TEST_POOL], mints: [TEST_BASE_MINT],
+      amounts: { maxActiveBinSlippage: 0 }, nativeDeposit: expected,
+    })).not.toThrow();
+
+    rejectRule(() => policy.validate(tx, {
+      writableAccounts, pools: [TEST_POOL], mints: [TEST_BASE_MINT],
+      amounts: { maxActiveBinSlippage: 0 },
+    }), 'native_deposit_binding');
+
+    rejectRule(() => policy.validate(tx, {
+      writableAccounts, pools: [TEST_POOL], mints: [TEST_BASE_MINT],
+      amounts: { maxActiveBinSlippage: 0 },
+      nativeDeposit: { ...expected, maxActiveBinSlippage: 1 },
+    }), 'native_deposit_binding');
+  });
+
 });
 
 // Keep the configured mint in the test module so it is evident the policy is

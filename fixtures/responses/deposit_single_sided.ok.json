@@ -4,16 +4,20 @@
     "position_id": "stub_position_001",
     "pool": "11111111111111111111111111111111",
     "side": "bid",
+    "allocation_mode": "weighted",
     "bins": [
       {
         "bin_id": 98,
-        "amount": 75
+        "amount": 75,
+        "target_bps": 5000
       },
       {
         "bin_id": 99,
-        "amount": 75
+        "amount": 75,
+        "target_bps": 5000
       }
     ],
+    "max_debit_amount": 150,
     "strategy_type": "Spot",
     "dry_run": true
   },

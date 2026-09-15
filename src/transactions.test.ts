@@ -9,6 +9,21 @@ import { baseEnv } from './testing.js';
 
 const BLOCKHASH = '11111111111111111111111111111111';
 const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function base58(bytes: Uint8Array): string {
+  let value = BigInt(`0x${Buffer.from(bytes).toString('hex')}`);
+  let encoded = '';
+  while (value > 0n) {
+    encoded = BASE58_ALPHABET[Number(value % 58n)]! + encoded;
+    value /= 58n;
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) break;
+    encoded = `1${encoded}`;
+  }
+  return encoded;
+}
 
 function fixture(simulationError: unknown = null) {
   const keypair = Keypair.generate();
@@ -30,7 +45,10 @@ function fixture(simulationError: unknown = null) {
   const connection: ExecutionConnection = {
     async getLatestBlockhash() { calls.push('blockhash'); return { blockhash: BLOCKHASH, lastValidBlockHeight: 7 }; },
     async simulateTransaction() { calls.push('simulate'); return { value: { err: simulationError, logs: ['program log'] } }; },
-    async sendRawTransaction(raw) { calls.push(`send:${raw.length > 0}`); return 'signature-1'; },
+    async sendRawTransaction(raw) {
+      calls.push(`send:${raw.length > 0}`);
+      return base58(raw.subarray(1, 65));
+    },
     async confirmTransaction() { calls.push('confirm'); return { value: { err: null } }; },
     async getTransaction() { calls.push('receipt'); return { slot: 42, blockTime: 1_700_000_000, meta: { fee: 5_000 } }; },
   };
@@ -51,7 +69,12 @@ describe('executeLegacyTransaction', () => {
     });
     expect(f.calls).toEqual(['blockhash', 'simulate', expect.stringMatching(/^send:true$/), 'confirm', 'receipt']);
     expect(f.signCalls()).toBe(1);
-    expect(result.receipt).toMatchObject({ signature: 'signature-1', slot: 42, fee_lamports: 5_000, status: 'confirmed' });
+    expect(result.receipt).toMatchObject({
+      signature: expect.stringMatching(/^[1-9A-HJ-NP-Za-km-z]{87,88}$/),
+      slot: 42,
+      fee_lamports: 5_000,
+      status: 'confirmed',
+    });
     expect(result.policy.messageHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -70,8 +93,28 @@ describe('executeLegacyTransaction', () => {
     await expect(executeLegacyTransaction(f.tx, {
       connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed',
       policyInput: { writableAccounts: [], amounts: {} },
-    })).rejects.toBeInstanceOf(PolicyRejected);
+    })).rejects.toMatchObject({
+      rule: 'writable_account_allowlist',
+      blockhash: BLOCKHASH,
+    } satisfies Partial<PolicyRejected>);
     expect(f.calls).toEqual(['blockhash']);
     expect(f.signCalls()).toBe(0);
+  });
+
+  it('returns the deterministic signature when submission acknowledgement is ambiguous', async () => {
+    const f = fixture();
+    f.connection.sendRawTransaction = async () => {
+      f.calls.push('send:throw');
+      throw new Error('timeout');
+    };
+    await expect(executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    })).rejects.toMatchObject({
+      signature: expect.stringMatching(/^[1-9A-HJ-NP-Za-km-z]{87,88}$/),
+      blockhash: BLOCKHASH,
+      policy: { messageHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+    expect(f.calls).toEqual(['blockhash', 'simulate', 'send:throw']);
   });
 });

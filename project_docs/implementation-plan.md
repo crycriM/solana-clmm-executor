@@ -18,7 +18,7 @@ spec (and `protocol.ts`) wins — fix this file.
 |---|---|
 | stdout is the protocol channel. Nothing but one-response-per-request may ever be written to stdout. | spec §2 |
 | Raw u64 amounts are `string` (`RawAmount`). Never `BN.toNumber()`. Decimal = `Number(bn.toString()) / 10**decimals` or `decimal.js`. | spec §5, `protocol.ts` header |
-| Never `ok:true` before confirmation at configured commitment (`confirmed` min; `finalized` for withdraw/close). | spec §4 rule 3 |
+| Never `ok:true` before confirmation at configured commitment (`confirmed` min; `finalized` for full withdraw/close). | spec §4 rule 3 |
 | Errors are codes from `ErrorCode` in `protocol.ts`, never prose in `error` (prose goes in `data.detail`). No secrets in `error`/`data`. | spec §4 rule 5 |
 | Policy rejections fail closed. No "sign anyway" downgrade. | spec §8 |
 | Changes to the verb contract update spec + `protocol.ts` + all four `ExecBridge` implementations + shared fixtures in one change. | spec §1.2, §11 |
@@ -458,14 +458,13 @@ Validate every compiled transaction **before** the signing request:
 
 ### T4.3 `deposit_single_sided` (spec §3.3)
 
-- **Contract amendment completed 2026-09-14:** the request carries
+- **Contract amended through 2026-09-15:** the request carries
   `expected_active_bin` (the active bin against which the keeper constructed
   the ladder) and `max_active_bin_slippage` (non-negative integer bins); the
   spec, `protocol.ts`, all four `ExecBridge` surfaces and shared fixtures were
   updated together. Do not silently use the SDK default of 3 bins. The existing
-  `strategy_type` does **not** select or alter the precise distribution; once
-  `amounts[i]` is authoritative it is, at most, audit metadata and the spec
-  must stop saying it is passed through to the SDK.
+  `strategy_type` is audit metadata; the explicit target allocations determine
+  the profile.
 - Pre-validate (before building the tx):
   - `bin_ids` contiguous, strictly increasing (else `bad_request`);
   - bids strictly `< expected_active_bin`, asks `>= expected_active_bin` (else
@@ -477,38 +476,24 @@ Validate every compiled transaction **before** the signing request:
     `sum(amounts)` ≤ wallet balance for that token (else
     `insufficient_balance`). This check is the guard on "the single most
     expensive bug available in this interface" (spec §11).
-- **Instruction semantics and selection (pinned `@meteora-ag/dlmm` 1.5.0
-  IDL):**
-  - `addLiquidityOneSide` takes one total raw `amount`, observed `activeId`,
-    `maxActiveBinSlippage`, and a u16 weight distribution. The strategy variant
-    likewise lets the program derive the per-bin allocation. These paths can
-    protect active-bin drift on-chain, but they do **not** accept the keeper's
-    exact raw amount for each bin. They therefore cannot implement this verb.
-  - `addLiquidityOneSidePrecise` takes
-    `bins[{binId, amount:u32}]` plus `decompressMultiplier:u64`.
-    `addLiquidityOneSidePrecise2` adds `maxAmount:u64` and the v2 remaining-
-    accounts form. Each deposited raw bin amount is exactly
-    `amount * decompressMultiplier`; no Spot/Curve/BidAsk redistribution is
-    performed. Use `...Precise2` for this executor (fall back to the older
-    precise instruction only after an explicit deployed-program/IDL
-    compatibility check), and set `maxAmount` to a validated,
-    transfer-fee-aware raw-token debit ceiling rather than `u64::MAX`.
-  - Neither precise instruction in the pinned IDL has `activeId` or
-    `maxActiveBinSlippage`. Do not claim that passing the latter off-chain gives
-    the same protection: a read/simulate check races with execution. M4 remains
-    blocked until the chosen precise path also has an **atomic on-chain** active-
-    bin guard. Acceptable resolutions are a Meteora precise instruction version
-    whose deployed IDL includes the guard, or a reviewed guard/CPI instruction
-    in the same transaction that asserts
-    `abs(lbPair.activeId - expected_active_bin) ≤ max_active_bin_slippage`
-    before `...Precise2`. If neither is available, fail closed; do not fall back
-    to `addLiquidityOneSide` and lose the requested profile.
-- Lift the SDK's established low-level `...Precise2` construction behind a
-  reviewed local builder, including exact raw conversion, GCD compression,
-  transaction splitting when a compressed amount exceeds u32, bin-array and
-  Token-2022 remaining-account handling, and the atomic guard above. A fresh
-  pre-build read and simulation remain defense in depth, not substitutes for
-  that guard.
+- **Native weighted instruction (pinned `@meteora-ag/dlmm` 1.5.0 IDL):**
+  - Treat `amounts[i]` as relative target allocations. Normalize them with a
+    deterministic largest-remainder method to 10,000 target BPS and reject a
+    profile that would round any requested bin to zero.
+  - `sum(amounts)` is the maximum side-token debit. Convert that sum exactly to
+    raw units, derive Meteora's u16 liquidity weights (including its base-side
+    price conversion), and reject if conversion drops or moves a requested bin.
+    Realized per-bin balances are approximate; `get_position` is authoritative.
+  - Build Meteora `addLiquidityOneSide` at the low level with the exact integer
+    `activeId` and `maxActiveBinSlippage`. Do not pass `slippage:0` through the
+    pinned percentage wrapper: its truthiness check selects a default 3-bin
+    tolerance. The native instruction supplies the required atomic on-chain
+    active-bin protection, so no custom Rust guard program is needed.
+  - The signing policy must decode the final instruction—not trust builder
+    metadata—and bind its pool, position, side-token debit, active ID, capped
+    tolerance, bin arrays, and distribution to the validated request.
+  - A fresh pool read and unsigned simulation remain defense in depth. They do
+    not replace decoding and validating the native instruction before signing.
 - Second deposit on a live position must return the **same** `position_id`
   (keeper logs `position_liquidity_added`).
 - Success without a resolvable `position_id` → return `ok:false`
@@ -521,29 +506,41 @@ Validate every compiled transaction **before** the signing request:
 - `bps` → fraction = `clamp(bps,1,100)/100`; echo `data.fraction`. Fee claim
   always included (`removeLiquiditySingleSide` + claim, or
   `closePosition` when fraction = 1).
-- Confirm at **finalized** (spec §4 rule 3).
+- Meteora's low-level `removeLiquidity2` accepts
+  `Vec<{binId:i32,bpsToRemove:u16}>`, so it can express a distinct withdrawal
+  percentage per bin. It has no `activeId`/`maxActiveBinSlippage` argument. The
+  current high-level `DLMM.removeLiquidity()` instead builds
+  `removeLiquidityByRange2` with one BPS value for each range/chunk. Use the
+  low-level instruction if a future contract makes per-bin BPS authoritative;
+  if a future withdrawal becomes active-bin-conditioned, select a native
+  Meteora instruction that carries the required bound.
+- Confirm a full withdrawal/close at **finalized** (spec §4 rule 3); a partial
+  withdrawal uses the configured commitment.
 - Response `WithdrawData`: `fees_claimed` + `amounts_returned` (decimal + raw)
   measured from pre/post token-account deltas of the confirmed txs — the
   cash-basis side of fee reconciliation. `closed` true iff position rent
   account is gone.
 - `unknown_position` if PDA missing/not owned.
+- Reject reward-enabled pools and Token-2022 transfer-hook tokens in the first
+  gate; their additional accounts must be added to both the protocol and the
+  compiled-instruction binding before support is enabled.
 
 ### T4.5 Verification (gate 4)
 
-- Local validator (solana-test-validator + local DLMM program + local Meteora
-  pool — test plan §4 environment): **the spec §11 unit — `side:"bid"` debits
-  quote and `side:"ask"` debits base, asserted against wallet balance
-  deltas.** This test is the release blocker for M4.
+- Deterministic builder/policy tests plus simulation against the deployed
+  Meteora program: **the spec §11 invariant — `side:"bid"` debits quote and
+  `side:"ask"` debits base, asserted against wallet balance deltas.** A local
+  validator may use a prebuilt deployed-program fixture, but this project does
+  not compile or deploy a custom Rust program. The final mainnet dust test is
+  the release blocker for M4.
 - Decode the built instruction and assert its discriminator is
-  `addLiquidityOneSidePrecise2` (never `addLiquidityOneSide` or a strategy
-  instruction), every `(binId, compressed amount)` and multiplier reconstructs
-  the requested raw profile exactly, and `maxAmount` equals the validated debit
-  ceiling (including any Token-2022 transfer-fee allowance). Read the position
-  back and compare every bin in raw units.
+  `addLiquidityOneSide`, the amount equals the validated raw debit ceiling,
+  weights cover every requested bin, and their target-BPS source sums to
+  10,000. Read the position back and record the realized raw distribution.
 - Active-bin drift matrix: drift at `max_active_bin_slippage` succeeds; drift
   one bin beyond it fails atomically with no token/position delta. Include a
   race test that changes `activeId` after the executor's last RPC read but
-  before execution, proving the result comes from the on-chain guard rather
+  before execution, proving the result comes from the native instruction rather
   than preflight. Assert no path inherits the SDK's default 3-bin tolerance.
 - Policy unit matrix: one test per rule (7 rules × reject/accept).
 - Dust lifecycle per test plan §8.3 on devnet + mainnet dust wallet; per-bin
@@ -576,9 +573,10 @@ risk (spec §10).
 - withdraw 100 % → optional swap → redeposit both sides, sequentially, each
   confirmed before the next.
 - Apply the same `deposit_spec.expected_active_bin` and
-  `deposit_spec.max_active_bin_slippage` contract, policy cap, exact Precise2
-  profile, and atomic active-bin guard defined in T4.3 to both redeposit legs.
-- On mid-bundle failure: **no blind retry**. Return `ok:false` with
+  `deposit_spec.max_active_bin_slippage` contract, policy cap, native weighted
+  profile, and on-chain active-bin fields defined in T4.3 to both redeposit
+  legs.
+- On mid-sequence failure: **no blind retry**. Return `ok:false` with
   `data.stage ∈ withdrew|swapped|deposited`, every receipt collected so far,
   and `data.position_id` of whatever now exists; keeper reconciles from chain
   truth next cycle.
@@ -587,15 +585,46 @@ risk (spec §10).
 
 ### T5.3 Jito bundle path
 
-- `JITO_ENABLED=true`: build the same three txs, tip via `MAX_PRIORITY_FEE`
-  budget into the Jito tip account (allow-listed in T4.2 rule 1), submit as
-  bundle to `JITO_BLOCK_ENGINE_URL`.
-- All-or-nothing by construction; on bundle drop return `ok:false`,
-  `data.stage:"bundle_dropped"`, no state change.
-- `bundle_id` in the executor JSONL line; receipts still per-transaction from
-  confirmed-tx fetches.
+- `JITO_ENABLED=true`: build the refresh sequence as at most five signed
+  transactions and submit it once with `sendBundle` to
+  `JITO_BLOCK_ENGINE_URL`. Jito's intended execution path is ordered, same-slot
+  and all-or-nothing: every transaction succeeds or none is committed. If
+  instruction/account limits require more than five transactions, fail closed
+  or use the explicitly recoverable sequential path; never split it into two
+  bundles while claiming end-to-end atomicity.
+- Bundle atomicity does **not** replace transaction-local safety. Jito documents
+  an uncled/skipped-block case in which individual bundle transactions may be
+  rebroadcast through the normal Solana banking path without bundle reversion
+  protection ([official mitigation guidance][jito-uncled]). Every transaction
+  must therefore be safe if it lands alone: keep each native deposit's active-
+  bin bound and every swap min-out/max-in bound inside the mutation instruction
+  that enforces it.
+- Never fall back by broadcasting already-signed bundle components separately
+  through ordinary RPC. On a safe retry, reconcile chain state, refresh the
+  active-bin snapshot and blockhash, rebuild/re-simulate/re-sign, and submit the
+  whole bundle again.
+- Tip within the `MAX_PRIORITY_FEE_LAMPORTS` budget to an allow-listed Jito tip
+  account.
+  Put the tip instruction in a meaningful guarded transaction (normally the
+  final mutation), not a standalone tip transaction; if size forces a separate
+  tip transaction, give it state assertions that prevent payment when the
+  intended state transition has not occurred.
+- A successful `sendBundle` response and `bundle_id` mean accepted by the Block
+  Engine, **not landed**. Poll `getInflightBundleStatuses`, then
+  `getBundleStatuses`/Solana signature statuses, and fetch one receipt per
+  transaction at the commitment required by §4. A timeout, `Pending`, or an
+  otherwise unresolved status returns `submission_ambiguous`; do not report a
+  drop or retry blindly.
+- Return `data.stage:"bundle_dropped"` with "no state change" only for a
+  definitive pre-forwarding failure, or after blockhash expiry plus
+  reconciliation proves that every component signature is absent. An
+  `Invalid`/not-found bundle status alone is not proof that no component landed.
+- Persist `bundle_id`, ordered component signatures, last valid block height,
+  status transitions and receipts in the executor JSONL line.
 - Decide the submission client here (raw HTTP `sendBundle` is ~100 lines and
   avoids a heavy dep; only add an SDK if raw proves painful).
+
+[jito-uncled]: https://docs.jito.wtf/lowlatencytxnsend/#failed-transactions
 
 ### T5.4 Verification (gate 5)
 
@@ -603,7 +632,10 @@ risk (spec §10).
   deposit → refresh → de-risk → emergency exit.
 - Failure injection: kill RPC between withdraw and swap in sequential mode →
   assert `stage:"withdrew"` + receipts + reconcilable `position_id`;
-  bundle-drop simulation → assert zero state change.
+  definitive pre-forwarding bundle failure → assert zero state change;
+  timeout/Pending → assert `submission_ambiguous`; simulate unbundling by
+  submitting each component alone and assert every local guard/bound prevents
+  an unsafe mutation or tip.
 - Ambiguous submission path (spec §4 rule 4): force timeout after send, assert
   `submission_ambiguous` + `data.pending_signature` + signature present in
   `tx_signatures`.
@@ -645,19 +677,23 @@ dlmm-bot logging pipeline with zero custody risk), stand up the signing gate
 1. **Side/units inversion in `deposit_single_sided`** (bid↔quote / ask↔base) —
    mitigated by the balance pre-check (T4.3) and the local-validator delta
    unit (T4.5, spec §11). Treat any regression here as a release blocker.
-2. **Exact profile vs active-bin protection** — the pinned Meteora precise
-   instructions preserve exact per-bin raw amounts but do not carry
-   `maxActiveBinSlippage`; the non-precise instruction has the guard but may
-   redistribute/round the profile. T4.3 makes an atomic guard plus Precise2 a
-   release gate; an off-chain-only check or fallback to `addLiquidityOneSide`
-   is not acceptable.
-3. **Swap-stream gap on reconnect** — mitigated by mandatory backfill +
+2. **Weighted target vs realized profile** — native `addLiquidityOneSide`
+   atomically enforces active-bin drift but converts target allocations to u16
+   liquidity weights and may round or price-adjust realized balances. T4.3
+   requires deterministic target normalization, a hard aggregate debit ceiling,
+   final-instruction decoding, and authoritative post-confirmation readback.
+3. **Jito bundle unbundling/ambiguous landing** — the expected Jito path is
+   ordered and all-or-nothing, but uncled-block rebroadcast can expose a
+   component transaction to normal execution. T5.3 requires independently safe
+   components, local guards/bounds, no component-RPC fallback, and status plus
+   signature reconciliation before retry or a "no state change" result.
+4. **Swap-stream gap on reconnect** — mitigated by mandatory backfill +
    `executor_stream_gap` bounds (T3.3) and the WS-kill test.
-4. **Fee-estimate drift** — `fee_lamports` must come from confirmed receipts
+5. **Fee-estimate drift** — `fee_lamports` must come from confirmed receipts
    only; DRY_RUN uses simulation estimates and is visibly marked
    (`data.dry_run`, `dryrun_` signature prefix, spec §9) so it can never be
    confused with live accounting.
-5. **lp-monitor copy drift** — vendored files (T0.5) fall behind upstream
+6. **lp-monitor copy drift** — vendored files (T0.5) fall behind upstream
    fixes. Mitigated by the provenance header + `vendor/README.md` SHA pin, so
    the drift check is mechanical (`git show <sha>:<path>` vs the copy) and
    re-copying is a deliberate reviewed step, not a silent import. No build

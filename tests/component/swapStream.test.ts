@@ -11,7 +11,9 @@ requireBuiltBridge();
 
 function run(scratch: ScratchEnv, input: string): { status: number; stdout: string; stderr: string; error?: Error } {
   const result = spawnSync(process.execPath, [BRIDGE_PATH], {
-    input, encoding: 'utf8', timeout: 10000, env: subprocessEnv(scratch),
+    // 20s tolerates the full parallel suite's subprocess contention; a genuine
+    // hang on the stream socket would still be caught well inside this bound.
+    input, encoding: 'utf8', timeout: 20000, env: subprocessEnv(scratch),
   });
   return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr, error: result.error };
 }
