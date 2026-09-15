@@ -12,6 +12,7 @@ import { Connection, PublicKey, type AccountInfo, type ParsedAccountData } from 
 import type { ExecutorConfig } from './config.js';
 import type { ExecutorLine } from './log.js';
 import type { PositionData, StateData, TokenMeta } from './protocol.js';
+import type { WritablePoolMetadata } from './depositTransaction.js';
 import { bnToDecimal, bnToRaw, withRetry } from './vendor/lp-monitor/meteoraReads.js';
 import { getSolanaConnection } from './vendor/lp-monitor/solana.js';
 import { withRpcFetchTiming, type RpcFetchTiming } from './rpcRateLimit.js';
@@ -31,6 +32,7 @@ const DlmmSdk = (
   }
 ).default;
 const DLMM_PROGRAM_ID = new PublicKey(LBCLMM_PROGRAM_IDS['mainnet-beta']);
+const EMPTY_PUBLIC_KEY = new PublicKey('11111111111111111111111111111111');
 
 export class UnknownPositionError extends Error {}
 export class RpcReadError extends Error {}
@@ -57,9 +59,24 @@ export interface ReadConnection {
 
 export interface PoolReader {
   readonly pubkey: PublicKey;
-  readonly lbPair: { binStep: number };
-  readonly tokenX: { publicKey: PublicKey; reserve: PublicKey; mint: { decimals: number } };
-  readonly tokenY: { publicKey: PublicKey; reserve: PublicKey; mint: { decimals: number } };
+  readonly lbPair: {
+    binStep: number;
+    rewardInfos?: { mint: PublicKey }[];
+  };
+  readonly tokenX: {
+    publicKey: PublicKey;
+    reserve: PublicKey;
+    mint: { decimals: number };
+    owner?: PublicKey;
+    transferHookAccountMetas?: unknown[];
+  };
+  readonly tokenY: {
+    publicKey: PublicKey;
+    reserve: PublicKey;
+    mint: { decimals: number };
+    owner?: PublicKey;
+    transferHookAccountMetas?: unknown[];
+  };
   getActiveBin(): Promise<{ binId: number }>;
   getFeeInfo(): { baseFeeRatePercentage: { mul(value: number): { toString(): string } } };
   getPosition(address: PublicKey): Promise<LbPosition>;
@@ -279,6 +296,40 @@ export class MeteoraReads {
     const decimals = this.poolDecimals(poolAddress);
     if (decimals === null) throw new RpcReadError('Pool metadata cache was not populated');
     return decimals;
+  }
+
+  /** Immutable account metadata required by the M4 transaction builder. */
+  async getWritablePoolMetadata(poolAddress: string): Promise<WritablePoolMetadata> {
+    if (!this.config.poolAllowlist.includes(poolAddress)) {
+      throw new InvalidPoolError('Pool is not allow-listed');
+    }
+    return this.rpc(async (endpoint) => {
+      const entry = await this.pool(endpoint, poolAddress);
+      const reader = this.reader(entry, endpoint);
+      if (!reader.tokenX.owner || !reader.tokenY.owner) {
+        throw new RpcReadError('SDK did not expose token program ownership');
+      }
+      return {
+        pool: reader.pubkey,
+        binStep: reader.lbPair.binStep,
+        activeRewardCount: (reader.lbPair.rewardInfos ?? [])
+          .filter((reward) => !reward.mint.equals(EMPTY_PUBLIC_KEY)).length,
+        tokenX: {
+          mint: reader.tokenX.publicKey,
+          reserve: reader.tokenX.reserve,
+          tokenProgram: reader.tokenX.owner,
+          decimals: reader.tokenX.mint.decimals,
+          transferHookAccountCount: reader.tokenX.transferHookAccountMetas?.length ?? 0,
+        },
+        tokenY: {
+          mint: reader.tokenY.publicKey,
+          reserve: reader.tokenY.reserve,
+          tokenProgram: reader.tokenY.owner,
+          decimals: reader.tokenY.mint.decimals,
+          transferHookAccountCount: reader.tokenY.transferHookAccountMetas?.length ?? 0,
+        },
+      };
+    });
   }
 
   private beginOperation(): void {

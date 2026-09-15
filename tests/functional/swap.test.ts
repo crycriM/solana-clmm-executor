@@ -1,9 +1,9 @@
 /** Plan §8.6 — swap behavior against the live venue. Opt-in only (RUN_LIVE=1). */
 import { describe, expect, it } from 'vitest';
 import type { SwapData, TxReceipt } from '../../src/protocol.js';
-import { finishLiveRun, liveRunnerInfo, startLiveRun } from './setup.js';
+import { finishLiveRun, liveM5RunnerInfo, startLiveRun } from './setup.js';
 
-const live = liveRunnerInfo();
+const live = liveM5RunnerInfo();
 
 describe.skipIf(!live.configured)('live swaps', () => {
   it('routes a minimum-size swap and records the realized price', async () => {

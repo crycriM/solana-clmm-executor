@@ -54,6 +54,9 @@ describe('handler write surfaces', () => {
     const req = requestsByVerb.deposit_single_sided! as { bin_ids: number[]; amounts: number[] };
     expect(data.bins.map((b) => b.bin_id)).toEqual(req.bin_ids);
     expect(data.bins.map((b) => b.amount)).toEqual(req.amounts);
+    expect(data.allocation_mode).toBe('weighted');
+    expect(data.bins.map((b) => b.target_bps)).toEqual([5_000, 5_000]);
+    expect(data.max_debit_amount).toBe(150);
   });
 
   it('withdraw at 100 bps closes the position and reports what came back', async () => {

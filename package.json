@@ -17,15 +17,20 @@
     "test:m2": "vitest run",
     "test:m3": "vitest run",
     "test:live": "RUN_LIVE=1 vitest run tests/functional",
+    "test:live:reads": "RUN_LIVE=1 RUN_LIVE_READS=1 vitest run tests/functional/liveReads.test.ts tests/functional/existingPositionReadback.test.ts tests/functional/swapStream.test.ts",
+    "test:live:m4": "RUN_LIVE=1 RUN_LIVE_M4=1 vitest run tests/functional/positionLifecycle.test.ts",
+    "test:live:m5": "RUN_LIVE=1 RUN_LIVE_M5=1 vitest run tests/functional/swap.test.ts tests/functional/refreshBundle.test.ts",
     "lint": "eslint src/",
     "check:m1": "npm run build && npm run typecheck && npm run lint && npm run test:m1 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess",
     "check:m2": "npm run build && npm run typecheck && npm run lint && npm run test:m2 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess",
-    "check:m3": "npm run build && npm run typecheck && npm run lint && npm run test:m3 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess"
+    "check:m3": "npm run build && npm run typecheck && npm run lint && npm run test:m3 && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess",
+    "check:m4": "npm run build && npm run typecheck && npm run lint && npm test && cd ../dlmm-bot && .venv/bin/python -m pytest -q --executor-subprocess"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1129.0",
     "@coral-xyz/anchor": "0.30.1",
     "@meteora-ag/dlmm": "1.5.0",
+    "@solana/spl-token": "0.4.15",
     "@solana/web3.js": "1.98.2",
     "axios": "1.7.7",
     "bn.js": "5.2.1",

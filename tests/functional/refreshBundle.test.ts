@@ -1,9 +1,9 @@
 /** Plan §8.4/§8.7 — refresh_bundle end-to-end keeper verb flow. Opt-in only (RUN_LIVE=1). */
 import { describe, expect, it } from 'vitest';
 import type { RefreshBundleRequest, PositionData } from '../../src/protocol.js';
-import { finishLiveRun, liveRunnerInfo, startLiveRun } from './setup.js';
+import { finishLiveRun, liveM5RunnerInfo, startLiveRun } from './setup.js';
 
-const live = liveRunnerInfo();
+const live = liveM5RunnerInfo();
 
 describe.skipIf(!live.configured)('refresh bundle', () => {
   it('withdraws a seeded dust position, swaps, redeposits, and restores state', async () => {
@@ -11,11 +11,14 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
     let status: 'clean' | 'failed' = 'failed';
     try {
       const pool = process.env['LIVE_POOL']!;
-      const positionId = process.env['LIVE_POSITION_ID'] ?? 'seed-dust';
-      const bidBins = (process.env['LIVE_DEPOSIT_BIN_IDS'] ?? '98,99').split(',').map(Number);
-      const amounts = (process.env['LIVE_DEPOSIT_AMOUNTS'] ?? '1,1').split(',').map(Number);
+      const positionId = process.env['LIVE_POSITION_ID']!;
+      const offsets = process.env['LIVE_DEPOSIT_BIN_OFFSETS']!.split(',').map(Number);
+      const amounts = process.env['LIVE_DEPOSIT_AMOUNTS']!.split(',').map(Number);
+      const side = process.env['LIVE_DEPOSIT_SIDE'] as 'bid' | 'ask';
       const state = await run.client.request({ method: 'get_state', pool });
       expect(state.ok).toBe(true);
+      const activeBin = Number((state.data as { active_bin: number }).active_bin);
+      const bins = offsets.map((offset) => activeBin + offset);
       const request: RefreshBundleRequest = {
         method: 'refresh_bundle',
         withdraw_position_id: positionId,
@@ -26,12 +29,12 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
         },
         deposit_spec: {
           pool,
-          expected_active_bin: Number((state.data as { active_bin: number }).active_bin),
-          max_active_bin_slippage: Number(process.env['LIVE_MAX_ACTIVE_BIN_SLIPPAGE'] ?? 0),
-          bid_bins: bidBins,
-          ask_bins: [],
-          bid_amounts: amounts,
-          ask_amounts: [],
+          expected_active_bin: activeBin,
+          max_active_bin_slippage: Number(process.env['LIVE_MAX_ACTIVE_BIN_SLIPPAGE']),
+          bid_bins: side === 'bid' ? bins : [],
+          ask_bins: side === 'ask' ? bins : [],
+          bid_amounts: side === 'bid' ? amounts : [],
+          ask_amounts: side === 'ask' ? amounts : [],
         },
       };
       const before = await run.client.request({ method: 'get_position', position_id: positionId });

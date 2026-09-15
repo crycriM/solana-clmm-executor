@@ -16,16 +16,21 @@ types, Meteora SDK reads, token mapping) — no dependency or import on that
 project; copies carry provenance headers with the upstream git SHA. That
 project stays read-only and never gains signing authority.
 
-M0 scaffolding, M1 wire proof, the offline portion of M2, and the M3 swap
-stream are implemented.
-M4's local file-signer and compiled-transaction policy foundation are present,
-but they are not connected to a write handler yet. The production executable
-continues to reject `DRY_RUN=false`.
-The production executable requires `DRY_RUN=true`: `get_state` and
-`get_position` are live read-only Meteora/RPC calls, while the four write verbs
-remain gated until the M4 signing gate. The stream decodes confirmed DLMM
-events into `SWAP_STREAM_PATH` and backfills after WebSocket reconnects. No
-signer is loaded.
+M0 scaffolding, M1 wire proof, the M2 live reads, and the M3 swap stream are
+implemented and gate-passed.
+M4's native weighted `deposit_single_sided` and `withdraw` implementations are
+wired when `DRY_RUN=false`. They prepare deterministic accounts, bind the
+compiled Meteora instructions to policy, simulate before signing, return real
+receipts, finalize full closes, and fail ambiguous submissions/readbacks closed.
+`swap` and `refresh_bundle` remain disabled pending M5. No custom Rust program
+or Solana/Rust toolchain is required: active-bin enforcement is encoded in
+Meteora's native `addLiquidityOneSide` instruction.
+
+With `DRY_RUN=true`, the production executable loads no signer: `get_state` and
+`get_position` use live Meteora/RPC reads, while write responses remain visibly
+marked synthetic stubs. The stream decodes confirmed DLMM events into
+`SWAP_STREAM_PATH` and backfills after WebSocket reconnects. M4 is implemented
+but has not yet passed the manual on-chain dust gate described below.
 
 Build and check with Node >=20:
 
@@ -51,7 +56,7 @@ Run the complete local/CI gate from this project after installing `dlmm-bot`
 and `mm-core` editable into **dlmm-bot's own** `.venv`:
 
 ```bash
-npm run check:m3
+npm run check:m4
 ```
 
 This builds first, runs all offline TS checks, then executes
@@ -66,8 +71,9 @@ fixtures; M3 also runs the recorded-log cross-language fixture.
 
 The live functional suites under `tests/functional/` are excluded unless
 `RUN_LIVE=1` is set. M2 live reads stay `DRY_RUN=true` and require
-`SOLANA_RPC_URL`, `LIVE_POOL`, `LIVE_POSITION_ID`, and `WALLET_PUBKEY`; write
-suites retain their separate `LIVE_WRITE_CONFIRM=yes` guard.
+`SOLANA_RPC_URL`, `LIVE_POOL`, `LIVE_POSITION_ID`, and `WALLET_PUBKEY`; run
+them with `npm run test:live:reads`. Write tests retain their separate
+`LIVE_WRITE_CONFIRM=yes` guard.
 The M2 read suite defaults to a 30-minute executor-read soak with ten seconds
 between samples. `LIVE_READ_SOAK_SECONDS` and `LIVE_READ_INTERVAL_MS` may
 shorten a preflight, but an abbreviated run is not soak evidence. This suite
@@ -98,6 +104,47 @@ PubSub at its derived WebSocket URL. HTTP JSON-RPC is CU-rate-limited in the
 client; `SOLANA_RPC_MAX_CU_PER_SECOND` defaults to 240 (20% below Alchemy's
 300 CU/s free-tier allowance) and is shared by retries and all Connections in
 the process.
+
+## Manual M4 dust gate
+
+Use a dedicated, balance-capped wallet and a pool with no active rewards or
+Token-2022 transfer hooks. For the local file signer, the key file must be
+owned by the executor user, mode `0400` or `0600`, in a parent directory mode
+`0700`. Mainnet additionally requires `FILE_SIGNER_ALLOW_MAINNET=true`; leave
+it false on localnet/devnet. Cargo and `cargo build-sbf` are not used.
+
+Copy `.env.example` to `.env.test.write` and put the required gateway values in
+that private, untracked environment file:
+`SOLANA_RPC_URL`, optional write/WS URLs, `WALLET_SIGNER=file`,
+`WALLET_KEYPAIR_PATH`, `WALLET_PUBKEY`, pool/mint allow-lists, all policy caps,
+log paths, and `DRY_RUN=false`. The first position can conservatively reserve
+about 0.22 SOL of policy budget when both bin arrays and a bitmap extension
+must be initialized; set caps deliberately and fund no more than the approved
+test budget.
+
+The M4 runner also requires `LIVE_POOL`, `LIVE_WRITE_CONFIRM=yes`, a unique
+`LIVE_RUN_ID`, explicit `LIVE_DEPOSIT_SIDE=bid|ask`, contiguous offsets from
+the freshly read active bin (`LIVE_DEPOSIT_BIN_OFFSETS`, for example `-2,-1`
+for a bid), decimal `LIVE_DEPOSIT_AMOUNTS`, and an explicit
+`LIVE_MAX_ACTIVE_BIN_SLIPPAGE`. Then run:
+
+```bash
+cp .env.example .env.test.write
+# Edit every REPLACE_* value and review the dust/cap values before continuing.
+npm ci
+npm run build
+set -a
+source .env.test.write
+set +a
+npm run test:live:m4
+```
+
+The command runs only deposit/readback/partial-withdraw/full-close. It does not
+collect M5 swap or refresh tests, and it fails during collection if any live
+gate value is missing. It derives and checks the position PDA is absent before
+writing, then deposits the configured vector twice to prove same-position
+addition; budget token funding accordingly. Evidence is written below
+`logs/test-artifacts/`.
 
 The swap stream's own cross-language check lives in
 `../dlmm-bot/tests/test_executor_swap_stream.py`: it decodes

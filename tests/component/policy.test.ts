@@ -39,11 +39,12 @@ describe('§9 fail-closed startup', () => {
     expect(result.stderr.trim()).not.toBe('');
   });
 
-  it('rejects DRY_RUN=false before the M4 write handlers are wired', () => {
-    // M2 is read-only; a live signer is gated separately.
-    const result = run({ DRY_RUN: 'false', LIVE_WRITE_CONFIRM: 'yes', LIVE_RUN_ID: 'test' });
+  it('requires signer configuration before enabling the M4 write handlers', () => {
+    // Write mode resolves the signer at startup; missing custody fails closed.
+    const result = run({ DRY_RUN: 'false', KMS_KEY_ARN: undefined });
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('KMS_KEY_ARN');
   });
 
   it('rejects the file arm at startup without WALLET_KEYPAIR_PATH when not dry-run', () => {

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { runBridge, UnrecoverableError } from './bridge.js';
+import { runBridge, UnrecoverableError, type BridgeOptions } from './bridge.js';
 import { loadConfig } from './config.js';
 import { createStubHandlers, STUB_QUOTE_MINT } from './handlers.js';
 import type { ExecHandlers, ExecRequest, ExecResponse, RefreshBundleRequest, Verb } from './protocol.js';
@@ -31,7 +31,15 @@ function fixture(verb: Verb, result: 'ok' | 'error'): ExecResponse {
   ) as ExecResponse;
 }
 
-async function exchange(lines: unknown[], handlers = createStubHandlers(), failLog = false) {
+async function exchange(
+  lines: unknown[],
+  handlers = createStubHandlers(),
+  failLog = false,
+  options: Partial<Pick<
+    BridgeOptions,
+    'handlerMode' | 'readAuditContext' | 'writeAuditContext'
+  >> = {},
+) {
   let stdout = '';
   const records: VerbLine[] = [];
   const errors: string[] = [];
@@ -57,6 +65,7 @@ async function exchange(lines: unknown[], handlers = createStubHandlers(), failL
     reportError: (error) => {
       errors.push(error);
     },
+    ...options,
   });
   return {
     code,
@@ -237,6 +246,60 @@ describe('stdio loop', () => {
     const { responses, records } = await exchange([requests.refresh_bundle], handlers);
     expect(responses[0]).toEqual(response);
     expect(records).toHaveLength(1);
+  });
+
+  it('keeps read RPC audit fields in M4 mode', async () => {
+    const { records } = await exchange(
+      [requests.get_state],
+      createStubHandlers(),
+      false,
+      {
+        handlerMode: 'm4',
+        readAuditContext: () => ({
+          attempt: 2,
+          rpcEndpoint: 'https://rpc.example/key',
+          readTimingsMs: { active_bin: 4 },
+        }),
+      },
+    );
+    expect(records[0]).toMatchObject({
+      policy_decision: 'read_only',
+      rpc_endpoint: 'https://rpc.example/key',
+      attempt: 2,
+      read_timings_ms: { active_bin: 4 },
+    });
+  });
+
+  it('emits the dedicated policy_rejected line after the verb record', async () => {
+    const handlers = createStubHandlers();
+    handlers.deposit_single_sided = async () => ({
+      ok: false,
+      data: { rule: 'native_deposit_binding' },
+      error: 'policy_rejected',
+      tx_signatures: [],
+      transactions: [],
+    }) as never;
+    const { records } = await exchange(
+      [requests.deposit_single_sided],
+      handlers,
+      false,
+      {
+        handlerMode: 'm4',
+        writeAuditContext: () => ({
+          policyDecision: 'rejected',
+          policyRule: 'native_deposit_binding',
+          messageHash: null,
+          blockhash: 'blockhash',
+          simulationOk: null,
+          signerId: 'wallet',
+        }),
+      },
+    );
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({ kind: 'verb', policy_decision: 'rejected' });
+    expect(records[1]).toMatchObject({
+      kind: 'policy_rejected', method: 'deposit_single_sided', rule: 'native_deposit_binding',
+    });
   });
 });
 

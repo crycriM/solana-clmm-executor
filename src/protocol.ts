@@ -38,13 +38,18 @@ export interface DepositSingleSidedRequest {
   pool: string;
   side: Side;
   bin_ids: number[];
-  /** amounts[i] pairs with bin_ids[i]. bid → QUOTE token, ask → BASE token. */
+  /**
+   * Target allocation per bin. The executor normalizes these values to native
+   * Meteora weights; sum(amounts) is the maximum token budget. Actual per-bin
+   * deposits are approximate and authoritative only after get_position.
+   * bid → QUOTE token, ask → BASE token.
+   */
   amounts: number[];
   /** Active bin used by the keeper when constructing this absolute ladder. */
   expected_active_bin: number;
   /** Maximum permitted absolute active-bin drift, measured in bins (not bps). */
   max_active_bin_slippage: number;
-  /** Audit metadata only; exact amounts, not this label, determine the profile. */
+  /** Audit metadata only; target amounts determine the native weight profile. */
   strategy_type: StrategyType;
 }
 
@@ -80,9 +85,9 @@ export interface DepositSpec {
   max_active_bin_slippage: number;
   bid_bins: number[];
   ask_bins: number[];
-  /** quote-token amounts */
+  /** quote-token target allocations; sum is the maximum quote budget */
   bid_amounts: number[];
-  /** base-token amounts */
+  /** base-token target allocations; sum is the maximum base budget */
   ask_amounts: number[];
 }
 
@@ -195,7 +200,10 @@ export interface DepositData {
   position_id: string;
   pool: string;
   side: Side;
-  bins: { bin_id: number; amount: number }[];
+  allocation_mode: 'weighted';
+  /** Requested targets and their normalized weights, not realized balances. */
+  bins: { bin_id: number; amount: number; target_bps: number }[];
+  max_debit_amount: number;
   strategy_type: StrategyType;
 }
 

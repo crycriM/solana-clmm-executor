@@ -32,8 +32,78 @@ export function liveRunnerInfo(): { configured: boolean; reason: string } {
   }
 }
 
+/** M4 campaign inputs are explicit and relative to a fresh active-bin read. */
+export function liveM4RunnerInfo(): { configured: boolean; reason: string } {
+  const result = liveM4Configuration();
+  if (process.env['RUN_LIVE_M4'] === '1' && !result.configured) {
+    throw new Error(`M4 live campaign is not configured: ${result.reason}`);
+  }
+  return result;
+}
+
+function liveM4Configuration(): { configured: boolean; reason: string } {
+  const common = liveRunnerInfo();
+  if (!common.configured) return common;
+  for (const key of [
+    'LIVE_DEPOSIT_SIDE',
+    'LIVE_DEPOSIT_BIN_OFFSETS',
+    'LIVE_DEPOSIT_AMOUNTS',
+    'LIVE_MAX_ACTIVE_BIN_SLIPPAGE',
+  ]) {
+    if (!process.env[key]) return { configured: false, reason: `${key} required for M4 writes` };
+  }
+  const side = process.env['LIVE_DEPOSIT_SIDE'];
+  if (side !== 'bid' && side !== 'ask') {
+    return { configured: false, reason: 'LIVE_DEPOSIT_SIDE must be bid|ask' };
+  }
+  const offsets = process.env['LIVE_DEPOSIT_BIN_OFFSETS']!.split(',').map(Number);
+  const amounts = process.env['LIVE_DEPOSIT_AMOUNTS']!.split(',').map(Number);
+  if (offsets.length === 0 || offsets.length !== amounts.length ||
+      offsets.some((value) => !Number.isSafeInteger(value)) ||
+      amounts.some((value) => !Number.isFinite(value) || value <= 0)) {
+    return { configured: false, reason: 'M4 offsets/amounts must be equal non-empty numeric lists' };
+  }
+  if (offsets.some((value, index) => index > 0 && value !== offsets[index - 1]! + 1)) {
+    return { configured: false, reason: 'LIVE_DEPOSIT_BIN_OFFSETS must be contiguous' };
+  }
+  if ((side === 'bid' && offsets.some((value) => value >= 0)) ||
+      (side === 'ask' && offsets.some((value) => value < 0))) {
+    return { configured: false, reason: 'M4 bin offsets cross the active bin for the selected side' };
+  }
+  const slippage = Number(process.env['LIVE_MAX_ACTIVE_BIN_SLIPPAGE']);
+  if (!Number.isSafeInteger(slippage) || slippage < 0) {
+    return { configured: false, reason: 'LIVE_MAX_ACTIVE_BIN_SLIPPAGE must be a non-negative integer' };
+  }
+  const requestTimeout = Number(process.env['LIVE_REQUEST_TIMEOUT_MS'] ?? 90_000);
+  if (!Number.isSafeInteger(requestTimeout) || requestTimeout < 30_000) {
+    return { configured: false, reason: 'LIVE_REQUEST_TIMEOUT_MS must be an integer >= 30000' };
+  }
+  return common;
+}
+
+/** M5 verbs are not implemented; this extra switch prevents accidental collection. */
+export function liveM5RunnerInfo(): { configured: boolean; reason: string } {
+  if (process.env['RUN_LIVE_M5'] !== '1') {
+    return { configured: false, reason: 'RUN_LIVE_M5=1 required' };
+  }
+  const common = liveM4Configuration();
+  if (!common.configured) throw new Error(`M5 live campaign is not configured: ${common.reason}`);
+  for (const key of ['LIVE_POSITION_ID', 'LIVE_BASE_MINT', 'LIVE_QUOTE_MINT', 'LIVE_SWAP_AMOUNT']) {
+    if (!process.env[key]) throw new Error(`M5 live campaign is not configured: ${key} required`);
+  }
+  return common;
+}
+
 /** M2 reads are explicitly live but remain DRY_RUN=true and need no write confirmation. */
 export function liveReadRunnerInfo(): { configured: boolean; reason: string } {
+  const result = liveReadConfiguration();
+  if (process.env['RUN_LIVE_READS'] === '1' && !result.configured) {
+    throw new Error(`live read campaign is not configured: ${result.reason}`);
+  }
+  return result;
+}
+
+function liveReadConfiguration(): { configured: boolean; reason: string } {
   if (process.env['RUN_LIVE'] !== '1') return { configured: false, reason: 'RUN_LIVE=1 required' };
   for (const key of ['SOLANA_RPC_URL', 'LIVE_POOL', 'LIVE_POSITION_ID', 'WALLET_PUBKEY']) {
     if (!process.env[key]) return { configured: false, reason: `${key} required` };
@@ -62,7 +132,11 @@ export function startLiveRun(runId: string): LiveRun {
     throw new Error('live run attempted without DRY_RUN=false');
   }
   const recorder = new RunRecorder(runId);
-  const client = new StdioClient(requireProductionBridge(), scratch.env);
+  const client = new StdioClient(
+    requireProductionBridge(),
+    scratch.env,
+    Number(process.env['LIVE_REQUEST_TIMEOUT_MS'] ?? 90_000),
+  );
   client.start();
   recorder.ingestStarted(readExecutorLog(scratch.logDir));
   return { scratch, client, recorder };

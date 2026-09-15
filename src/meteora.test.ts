@@ -3,6 +3,7 @@ import BN from 'bn.js';
 import { describe, expect, it } from 'vitest';
 import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-ag/dlmm';
 import { PublicKey, type AccountInfo, type ParsedAccountData } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { createReadHandlers } from './handlers.js';
 import { MeteoraReads, type PoolReader, type ReadConnection } from './meteora.js';
 import { loadConfig } from './config.js';
@@ -122,11 +123,15 @@ function fakePool(): PoolReader {
       publicKey: new PublicKey(state.token_x.mint),
       reserve: reserveX,
       mint: { decimals: state.token_x.decimals },
+      owner: TOKEN_PROGRAM_ID,
+      transferHookAccountMetas: [],
     },
     tokenY: {
       publicKey: new PublicKey(state.token_y.mint),
       reserve: reserveY,
       mint: { decimals: state.token_y.decimals },
+      owner: TOKEN_PROGRAM_ID,
+      transferHookAccountMetas: [],
     },
     async getActiveBin() {
       return { binId: state.active_bin };
@@ -267,6 +272,18 @@ describe('M2 get_state recorded RPC mapping', () => {
   it('returns null TVL when either external token price is unavailable', async () => {
     const h = harness([new FakeConnection()], false);
     expect((await h.reads.getState(TEST_POOL)).tvl_usd).toBeNull();
+  });
+
+  it('exposes the token programs and reserves needed by the write builder', async () => {
+    const metadata = await harness().reads.getWritablePoolMetadata(TEST_POOL);
+    expect(metadata).toMatchObject({
+      pool: poolAddress,
+      binStep: state.bin_step_bps,
+      activeRewardCount: 0,
+      tokenX: { mint: new PublicKey(state.token_x.mint), reserve: reserveX, decimals: 9 },
+      tokenY: { mint: new PublicKey(state.token_y.mint), reserve: reserveY, decimals: 6 },
+    });
+    expect(metadata.tokenX.tokenProgram.equals(TOKEN_PROGRAM_ID)).toBe(true);
   });
 
   it('normalizes a non-allow-listed pool and exhausted RPC reads', async () => {
