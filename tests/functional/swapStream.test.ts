@@ -1,4 +1,4 @@
-/** Plan §8.2 stream half — live swap stream completeness (spec §6). Opt-in only (RUN_LIVE=1). */
+/** Live swap stream completeness checks. Opt-in only (RUN_LIVE=1). */
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { SwapStreamRow } from '../../src/protocol.js';
@@ -38,7 +38,7 @@ describe.skipIf(!live.configured)('live swap stream', () => {
       expect(observed.length, 'busy-pool window produced no swaps').toBeGreaterThan(0);
 
       for (const row of observed) {
-        // Spec §6 invariants, checked against live data rather than fixtures.
+        // Stream invariants, checked against live data rather than fixtures.
         expect(row.tx_signature).toBeTruthy();
         expect(Number.isSafeInteger(row.slot)).toBe(true);
         expect(Number.isSafeInteger(row.block_time)).toBe(true);

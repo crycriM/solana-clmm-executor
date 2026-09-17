@@ -1,7 +1,7 @@
 /**
- * Bootstrap for opt-in live functional suites (plan §7, §10).
+ * Bootstrap for opt-in live functional suites.
  *
- * Live runs drive `dist/bridge.js`, record a §7 artifact, and always run
+ * Live runs drive `dist/bridge.js`, record an artifact, and always run
  * cleanup. Write runs additionally require DRY_RUN=false +
  * LIVE_WRITE_CONFIRM=yes + LIVE_RUN_ID; M2 read runs remain dry-run.
  * Collection is already gated by vitest.config.ts (RUN_LIVE=1); if the runner
@@ -81,7 +81,11 @@ function liveM4Configuration(): { configured: boolean; reason: string } {
   return common;
 }
 
-/** M5 verbs are not implemented; this extra switch prevents accidental collection. */
+/**
+ * M5 live campaign gate. The verbs are implemented (Jupiter swap + sequential
+ * refresh_bundle); this extra switch keeps the write campaign opt-in so a
+ * default `RUN_LIVE=1` read pass can never reach a signing path by accident.
+ */
 export function liveM5RunnerInfo(): { configured: boolean; reason: string } {
   if (process.env['RUN_LIVE_M5'] !== '1') {
     return { configured: false, reason: 'RUN_LIVE_M5=1 required' };

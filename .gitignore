@@ -40,3 +40,4 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+project-internal/

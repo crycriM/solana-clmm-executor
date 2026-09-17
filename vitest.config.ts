@@ -12,6 +12,10 @@ export default defineConfig({
     exclude: live
       ? ['**/node_modules/**', '**/dist/**']
       : ['tests/functional/**', '**/node_modules/**', '**/dist/**'],
+    // Live suites share one wallet and one account-level Alchemy budget; run
+    // them sequentially so parallel bridge subprocesses cannot multiply the
+    // per-process CU allowance (2026-09-16 Alchemy 429 alert).
+    fileParallelism: !live,
     testTimeout: 30_000,
     hookTimeout: 30_000,
   },

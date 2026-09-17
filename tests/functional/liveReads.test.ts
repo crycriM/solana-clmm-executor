@@ -1,4 +1,4 @@
-/** Plan §8.2 — live connectivity and read verbs. Opt-in only (RUN_LIVE=1). */
+/** Live connectivity and read verbs. Opt-in only (RUN_LIVE=1). */
 import fs from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { PositionData, StateData } from '../../src/protocol.js';

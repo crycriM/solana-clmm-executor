@@ -1,13 +1,14 @@
 /**
- * The only legacy-transaction execution path for M4.
+ * The only transaction execution path for M4/M5 writes.
  *
- * Verb handlers build a transaction from trusted SDK calls, supply the
- * builder's expected accounts/amounts to TransactionPolicy, and hand it here.
- * This module owns the irreversible sequence: blockhash → policy → unsigned
- * simulation → policy reservation → sign → submit → confirm → receipt.
+ * Verb handlers build a transaction from trusted SDK calls (or, for Jupiter
+ * swaps, from builder-assembled instructions), supply the builder's expected
+ * accounts/amounts to TransactionPolicy, and hand it here. This module owns
+ * the irreversible sequence: blockhash → policy → unsigned simulation →
+ * policy reservation → sign → submit → confirm → receipt.
  */
 
-import { Transaction } from '@solana/web3.js';
+import { Transaction, VersionedTransaction } from '@solana/web3.js';
 import {
   PolicyRejected,
   type PolicyDecision,
@@ -18,9 +19,16 @@ import type { Signer } from './signer.js';
 import type { TxReceipt } from './protocol.js';
 
 const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const RECEIPT_ATTEMPTS = 8;
+const RECEIPT_INITIAL_DELAY_MS = 250;
+const RECEIPT_MAX_DELAY_MS = 2_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Encode the already-produced signature so RPC timeouts remain reconcilable. */
-function base58(bytes: Uint8Array): string {
+export function encodeBase58(bytes: Uint8Array): string {
   let value = BigInt(`0x${Buffer.from(bytes).toString('hex')}`);
   let encoded = '';
   while (value > 0n) {
@@ -64,13 +72,29 @@ export class SubmissionAmbiguous extends Error {
  */
 export type ExecutionCommitment = 'confirmed' | 'finalized';
 
+/** The slice of `meta.tokenBalances` needed to settle realized swap amounts. */
+export interface TransactionTokenBalance {
+  accountIndex: number;
+  mint: string;
+  owner?: string | null;
+  uiTokenAmount: { amount: string };
+}
+
+export interface TransactionMeta {
+  fee: number;
+  preBalances?: number[] | null;
+  postBalances?: number[] | null;
+  preTokenBalances?: TransactionTokenBalance[] | null;
+  postTokenBalances?: TransactionTokenBalance[] | null;
+}
+
 export interface ExecutionConnection {
   getLatestBlockhash(commitment: ExecutionCommitment): Promise<{
     blockhash: string;
     lastValidBlockHeight: number;
   }>;
   /** web3 legacy overload: absent signers means `sigVerify:false`. */
-  simulateTransaction(tx: Transaction): Promise<{
+  simulateTransaction(tx: Transaction | VersionedTransaction): Promise<{
     value: { err: unknown; logs: string[] | null };
   }>;
   sendRawTransaction(raw: Buffer, options: { skipPreflight: boolean; preflightCommitment: ExecutionCommitment }): Promise<string>;
@@ -81,7 +105,7 @@ export interface ExecutionConnection {
   getTransaction(
     signature: string,
     config: { commitment: ExecutionCommitment; maxSupportedTransactionVersion: number },
-  ): Promise<{ slot: number; blockTime?: number | null; meta: { fee: number } | null } | null>;
+  ): Promise<{ slot: number; blockTime?: number | null; meta: TransactionMeta | null } | null>;
 }
 
 export interface ExecuteLegacyOptions {
@@ -97,36 +121,29 @@ export interface ExecutedTransaction {
   policy: PolicyDecision;
   /** Blockhash the signed message committed to; recorded in the verb audit. */
   blockhash: string;
+  /** Confirmed-receipt fee and token balances; swap verbs settle realized amounts from these. */
+  meta: TransactionMeta;
+}
+
+interface BlockhashInfo {
+  blockhash: string;
+  lastValidBlockHeight: number;
 }
 
 /**
- * Execute one SDK-built legacy transaction.  There is deliberately no public
- * "serialized transaction" input: accepting one would bypass the verb
- * builder and make the policy boundary meaningless.
+ * Shared irreversible tail for both transaction shapes: reserve policy budget,
+ * sign exactly once, submit, confirm, and fetch the authoritative receipt.
+ * `finalize` receives the produced signature so the caller can attach it to
+ * the message it just signed.
  */
-export async function executeLegacyTransaction(
-  tx: Transaction,
+async function admitAndSettle(
   options: ExecuteLegacyOptions,
-): Promise<ExecutedTransaction> {
-  const { connection, signer, policy, policyInput, commitment } = options;
-  if (!tx.feePayer) tx.feePayer = signer.publicKey;
-  const blockhash = await connection.getLatestBlockhash(commitment);
-  tx.recentBlockhash = blockhash.blockhash;
-
-  let decision: PolicyDecision;
-  try {
-    decision = policy.validate(tx, policyInput);
-  } catch (error) {
-    if (error instanceof PolicyRejected) {
-      error.blockhash = blockhash.blockhash;
-    }
-    throw error;
-  }
-  const simulation = await connection.simulateTransaction(tx);
-  if (simulation.value.err !== null) {
-    throw new SimulationFailed(simulation.value.logs ?? [], decision, blockhash.blockhash);
-  }
-
+  decision: PolicyDecision,
+  blockhash: BlockhashInfo,
+  message: Uint8Array,
+  finalize: (signatureBytes: Buffer) => Buffer,
+): Promise<{ receipt: TxReceipt; meta: TransactionMeta }> {
+  const { connection, signer, policy, commitment } = options;
   // Reserve after the unsigned simulation. A signer/submission failure leaves
   // the reservation consumed, deliberately conservative until process restart.
   try {
@@ -138,12 +155,12 @@ export async function executeLegacyTransaction(
     }
     throw error;
   }
-  const signatureBytes = await signer.sign(tx.serializeMessage());
-  tx.addSignature(signer.publicKey, signatureBytes);
-  const expectedSignature = base58(signatureBytes);
+  const signatureBytes = await signer.sign(message);
+  const serialized = finalize(signatureBytes);
+  const expectedSignature = encodeBase58(signatureBytes);
   let signature: string;
   try {
-    signature = await connection.sendRawTransaction(tx.serialize(), {
+    signature = await connection.sendRawTransaction(serialized, {
       skipPreflight: true,
       preflightCommitment: commitment,
     });
@@ -188,10 +205,7 @@ export async function executeLegacyTransaction(
   }
   let chainTx: Awaited<ReturnType<ExecutionConnection['getTransaction']>>;
   try {
-    chainTx = await connection.getTransaction(signature, {
-      commitment,
-      maxSupportedTransactionVersion: 0,
-    });
+    chainTx = await confirmedReceipt(connection, signature, commitment);
   } catch {
     throw new SubmissionAmbiguous(
       'confirmed transaction receipt lookup failed',
@@ -211,8 +225,6 @@ export async function executeLegacyTransaction(
     );
   }
   return {
-    policy: decision,
-    blockhash: blockhash.blockhash,
     receipt: {
       signature,
       slot: chainTx.slot,
@@ -221,5 +233,115 @@ export async function executeLegacyTransaction(
       compute_unit_price: null,
       status: commitment === 'finalized' ? 'finalized' : 'confirmed',
     },
+    meta: chainTx.meta,
   };
+}
+
+/**
+ * PubSub confirmation can arrive before an RPC provider's transaction index
+ * serves getTransaction. Retry that bounded, post-confirmation visibility lag
+ * instead of reporting a submission ambiguity immediately.
+ */
+export async function confirmedReceipt(
+  connection: ExecutionConnection,
+  signature: string,
+  commitment: ExecutionCommitment,
+): Promise<Awaited<ReturnType<ExecutionConnection['getTransaction']>>> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RECEIPT_ATTEMPTS; attempt += 1) {
+    try {
+      const receipt = await connection.getTransaction(signature, {
+        commitment,
+        maxSupportedTransactionVersion: 0,
+      });
+      if (receipt?.meta) return receipt;
+      lastError = undefined;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt + 1 < RECEIPT_ATTEMPTS) {
+      const backoff = Math.min(RECEIPT_INITIAL_DELAY_MS * (2 ** attempt), RECEIPT_MAX_DELAY_MS);
+      await delay(backoff);
+    }
+  }
+  if (lastError !== undefined) throw lastError;
+  return null;
+}
+
+/**
+ * Execute one SDK-built legacy transaction.  There is deliberately no public
+ * "serialized transaction" input: accepting one would bypass the verb
+ * builder and make the policy boundary meaningless.
+ */
+export async function executeLegacyTransaction(
+  tx: Transaction,
+  options: ExecuteLegacyOptions,
+): Promise<ExecutedTransaction> {
+  const { connection, signer, commitment } = options;
+  if (!tx.feePayer) tx.feePayer = signer.publicKey;
+  const blockhash = await connection.getLatestBlockhash(commitment);
+  tx.recentBlockhash = blockhash.blockhash;
+
+  let decision: PolicyDecision;
+  try {
+    decision = options.policy.validate(tx, options.policyInput);
+  } catch (error) {
+    if (error instanceof PolicyRejected) {
+      error.blockhash = blockhash.blockhash;
+    }
+    throw error;
+  }
+  const simulation = await connection.simulateTransaction(tx);
+  if (simulation.value.err !== null) {
+    throw new SimulationFailed(simulation.value.logs ?? [], decision, blockhash.blockhash);
+  }
+  const settled = await admitAndSettle(
+    options,
+    decision,
+    blockhash,
+    tx.serializeMessage(),
+    (signatureBytes) => {
+      tx.addSignature(signer.publicKey, signatureBytes);
+      return tx.serialize();
+    },
+  );
+  return { ...settled, policy: decision, blockhash: blockhash.blockhash };
+}
+
+/**
+ * Execute one builder-assembled v0 transaction (the Jupiter swap path).
+ * The fresh blockhash is written into the message before policy sees it, so
+ * the validated message hash is the exact bytes that get signed.
+ */
+export async function executeVersionedTransaction(
+  tx: VersionedTransaction,
+  options: ExecuteLegacyOptions,
+): Promise<ExecutedTransaction> {
+  const { connection, signer, policy, policyInput, commitment } = options;
+  const blockhash = await connection.getLatestBlockhash(commitment);
+  tx.message.recentBlockhash = blockhash.blockhash;
+  let decision: PolicyDecision;
+  try {
+    decision = policy.validate(tx, policyInput);
+  } catch (error) {
+    if (error instanceof PolicyRejected) {
+      error.blockhash = blockhash.blockhash;
+    }
+    throw error;
+  }
+  const simulation = await connection.simulateTransaction(tx);
+  if (simulation.value.err !== null) {
+    throw new SimulationFailed(simulation.value.logs ?? [], decision, blockhash.blockhash);
+  }
+  const settled = await admitAndSettle(
+    options,
+    decision,
+    blockhash,
+    tx.message.serialize(),
+    (signatureBytes) => {
+      tx.addSignature(signer.publicKey, signatureBytes);
+      return Buffer.from(tx.serialize());
+    },
+  );
+  return { ...settled, policy: decision, blockhash: blockhash.blockhash };
 }

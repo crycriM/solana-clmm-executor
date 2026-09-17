@@ -97,6 +97,7 @@ describe('shared wire fixtures', () => {
       get_position: 'position_id',
       deposit_single_sided: 'pool',
       withdraw: 'position_id',
+      quote_swap: 'in_mint',
       swap: 'in_mint',
       refresh_bundle: 'withdraw_position_id',
     }[verb];
@@ -288,10 +289,12 @@ describe('stdio loop', () => {
         writeAuditContext: () => ({
           policyDecision: 'rejected',
           policyRule: 'native_deposit_binding',
-          messageHash: null,
+          messageHashes: [],
           blockhash: 'blockhash',
           simulationOk: null,
           signerId: 'wallet',
+          bundleId: null,
+          bundleRecord: null,
         }),
       },
     );
@@ -300,6 +303,37 @@ describe('stdio loop', () => {
     expect(records[1]).toMatchObject({
       kind: 'policy_rejected', method: 'deposit_single_sided', rule: 'native_deposit_binding',
     });
+  });
+
+  it('binds every validated message hash to the verb req_seq', async () => {
+    const handlers = createStubHandlers();
+    const hashes = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
+    const { records } = await exchange(
+      [requests.refresh_bundle],
+      handlers,
+      false,
+      {
+        handlerMode: 'm4',
+        writeAuditContext: () => ({
+          policyDecision: 'allowed',
+          policyRule: null,
+          messageHashes: hashes,
+          blockhash: 'blockhash',
+          simulationOk: true,
+          signerId: 'wallet',
+          bundleId: null,
+          bundleRecord: null,
+        }),
+      },
+    );
+    expect(records[0]).toMatchObject({
+      kind: 'verb', req_seq: 1, method: 'refresh_bundle', message_hashes: hashes,
+    });
+  });
+
+  it('leaves message_hashes empty for reads and stubbed writes', async () => {
+    const { records } = await exchange([requests.get_state], createStubHandlers(), false);
+    expect(records[0]).toMatchObject({ kind: 'verb', message_hashes: [] });
   });
 });
 
@@ -327,7 +361,7 @@ describe('compiled bridge with the offline fixture entrypoint', () => {
     const result = cli(verbs.map((v) => JSON.stringify(requests[v])).join('\n'));
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
-    expect(result.stdout.trim().split('\n')).toHaveLength(6);
+    expect(result.stdout.trim().split('\n')).toHaveLength(verbs.length);
     for (const line of result.stdout.trim().split('\n'))
       expect(JSON.parse(line).data.stub).toBe(true);
     const files = fs.readdirSync(result.dir).filter((file) => file.endsWith('.jsonl'));
@@ -345,7 +379,8 @@ describe('compiled bridge with the offline fixture entrypoint', () => {
       policy_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
       dry_run: true,
     });
-    expect(records.slice(1).map((row) => row.req_seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(records.slice(1).map((row) => row.req_seq))
+      .toEqual(verbs.map((_, index) => index + 1));
   });
 
   it.each([

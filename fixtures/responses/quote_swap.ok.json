@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "data": {
+    "quotes": [],
+    "rejected": [],
+    "best_pool": null,
+    "dry_run": true
+  },
+  "error": null,
+  "tx_signatures": [],
+  "transactions": []
+}

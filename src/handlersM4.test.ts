@@ -1,10 +1,12 @@
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { describe, expect, it, vi } from 'vitest';
+import { loadConfig } from './config.js';
 import { createM4Handlers } from './handlers.js';
 import { RpcReadError, UnknownPositionError } from './meteora.js';
 import { PolicyRejected } from './policy.js';
 import type { DepositSingleSidedRequest, PositionData, WithdrawRequest } from './protocol.js';
+import { baseEnv } from './testing.js';
 
 const pool = new PublicKey('11111111111111111111111111111111');
 const baseMint = new PublicKey('So11111111111111111111111111111111111111112');
@@ -22,6 +24,7 @@ function receiptFixture() {
   return {
     policy: { messageHash: 'a'.repeat(64), solSpendLamports: 0 },
     blockhash: 'test-blockhash',
+    meta: { fee: 5_000 },
     receipt: {
       signature: 'confirmed-signature', slot: 42, block_time: 1_756_900_001,
       fee_lamports: 5_000, compute_unit_price: 0, status: 'confirmed' as const,
@@ -65,6 +68,14 @@ function stateFixture(baseRaw = '10000000000', quoteRaw = '500000000') {
 }
 
 function fixture(execute = vi.fn(async () => receiptFixture())) {
+  // The real executor validates through the policy, which records each message
+  // hash; the injected execute bypasses it, so mirror that side effect here.
+  const validatedHashes: string[] = [];
+  const recordingExecute = vi.fn(async (...args: Parameters<typeof execute>) => {
+    const executed = await execute(...args);
+    validatedHashes.push(executed.policy.messageHash);
+    return executed;
+  });
   const wallet = Keypair.generate().publicKey;
   const position = Keypair.generate().publicKey;
   const before = positionFixture({ owner: wallet, position, baseRaw: '200000000', quoteRaw: '30000000' });
@@ -81,9 +92,10 @@ function fixture(execute = vi.fn(async () => receiptFixture())) {
   const handlers = createM4Handlers(reads as never, {
     connection: connection as never,
     signer: { publicKey: wallet, signerId: wallet.toBase58(), sign: vi.fn() },
-    policy: {} as never,
+    policy: { takeValidatedMessageHashes: () => validatedHashes.splice(0) } as never,
     commitment: 'confirmed',
-    execute,
+    config: loadConfig(baseEnv()),
+    execute: recordingExecute,
   });
   return { handlers, reads, execute, wallet, position, before };
 }
@@ -108,7 +120,7 @@ describe('M4 weighted deposit handler composition', () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(handlers.writeAudit()).toMatchObject({
       policyDecision: 'allowed',
-      messageHash: 'a'.repeat(64),
+      messageHashes: ['a'.repeat(64)],
       blockhash: 'test-blockhash',
       simulationOk: true,
     });

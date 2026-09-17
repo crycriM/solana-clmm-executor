@@ -1,8 +1,5 @@
-// vendored from LP-hedging-strategy/lp-monitor/src/chains/solana.ts @ git aacfe017291681164a1a23b756f4516768699ad0
-// co-maintained; strip = RPC endpoint read from lp-monitor config replaced by
-// this project's config (read + distinct write endpoint, explicit websocket
-// endpoint, commitment arg).
-// Do not edit in place without noting the delta here.
+// Read-only Solana connection adapter. Endpoints come from executor
+// configuration, with distinct read/write and explicit websocket settings.
 
 import { Commitment, Connection } from '@solana/web3.js';
 import { ExecutorConfig } from '../../config.js';
@@ -21,19 +18,15 @@ export function getSolanaConnection(
   const commitment: Commitment = opts.commitment ?? config.commitment;
   const endpoint = opts.write ? config.rpcWriteUrl : config.rpcReadUrl;
   const fetch = rateLimitedFetch(sharedRpcLimiter(endpoint, config.rpcMaxCuPerSecond));
-  if (opts.write) {
-    return new Connection(config.rpcWriteUrl, {
-      commitment,
-      fetch,
-      // All retries must reacquire the executor's CU budget and remain
-      // bounded by withRetry; web3.js's internal 429 loop is opaque/unbounded.
-      disableRetryOnRateLimit: true,
-    });
-  }
-  return new Connection(config.rpcReadUrl, {
+  return new Connection(endpoint, {
     commitment,
     fetch,
+    // All retries must reacquire the executor's CU budget and remain bounded
+    // by withRetry; web3.js's internal 429 loop is opaque/unbounded.
     disableRetryOnRateLimit: true,
+    // Confirmation uses signatureSubscribe on the write Connection. Providers
+    // such as Alchemy expose Solana PubSub on a distinct streaming host, so the
+    // explicit endpoint must apply to reads and writes alike.
     ...(config.rpcWsUrl === null ? {} : { wsEndpoint: config.rpcWsUrl }),
   });
 }

@@ -5,8 +5,8 @@
  * its socket implicitly whenever it closes with subscriptions still registered,
  * so against a dead endpoint it settles into an endless reconnect loop whose
  * timers and socket handles pin the event loop. The executor is a subprocess
- * whose lifetime is the keeper's (spec §2): if it cannot exit when stdin
- * closes, `ExecBridge.start()` never sees the restart it depends on.
+ * whose lifetime is controlled by its standard-input owner: if it cannot exit
+ * when stdin closes, the owner cannot reliably restart it.
  *
  * So teardown does three things in order: empty the subscription registry so
  * there is nothing to re-establish, stop the client's own reconnect timer and

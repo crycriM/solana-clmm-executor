@@ -18,6 +18,103 @@ describe('Alchemy-compatible RPC CU limiting', () => {
     expect(rpcBodyCu('not json')).toBe(40);
   });
 
+  it('prices the write and confirmation methods at Alchemy throughput CU', () => {
+    expect(rpcBodyCu(JSON.stringify({ method: 'sendTransaction' }))).toBe(20);
+    expect(rpcBodyCu(JSON.stringify({ method: 'simulateTransaction' }))).toBe(20);
+    expect(rpcBodyCu(JSON.stringify({ method: 'getGenesisHash' }))).toBe(10);
+    expect(rpcBodyCu(JSON.stringify({ method: 'getLargestAccounts' }))).toBe(40);
+  });
+
+  function fakeClock(): {
+    clock: { now: () => number; sleep: (ms: number) => Promise<void> };
+    sleeps: number[];
+  } {
+    let now = 0;
+    const sleeps: number[] = [];
+    return {
+      sleeps,
+      clock: {
+        now: () => now,
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+          now += ms;
+        },
+      },
+    };
+  }
+
+  it('backs off exponentially, drains the bucket, then retries a 429', async () => {
+    const { clock, sleeps } = fakeClock();
+    const limiter = new RpcCuRateLimiter(240, clock);
+    let calls = 0;
+    const inner = vi.fn(async () => {
+      calls += 1;
+      return calls === 1 ? new Response('{}', { status: 429 }) : new Response('{}');
+    });
+    const wrapped = rateLimitedFetch(limiter, inner as typeof fetch, {
+      sleep: clock.sleep,
+      random: () => 0,
+    });
+    const response = await wrapped('https://rpc.invalid', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'getSlot' }),
+    });
+    expect(response.status).toBe(200);
+    expect(inner).toHaveBeenCalledTimes(2);
+    expect(sleeps[0]).toBe(1_000);
+    expect(sleeps.at(-1)).toBeGreaterThan(0);
+  });
+
+  it('honors Retry-After for the 429 cooldown', async () => {
+    const { clock, sleeps } = fakeClock();
+    const limiter = new RpcCuRateLimiter(240, clock);
+    let calls = 0;
+    const inner = vi.fn(async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response('{}', { status: 429, headers: { 'retry-after': '2' } })
+        : new Response('{}');
+    });
+    const wrapped = rateLimitedFetch(limiter, inner as typeof fetch, { sleep: clock.sleep });
+    await wrapped('https://rpc.invalid', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'getSlot' }),
+    });
+    expect(sleeps[0]).toBe(2_000);
+  });
+
+  it('returns the final 429 once attempts are exhausted', async () => {
+    const { clock, sleeps } = fakeClock();
+    const limiter = new RpcCuRateLimiter(240, clock);
+    const inner = vi.fn(async () => new Response('{}', { status: 429 }));
+    const wrapped = rateLimitedFetch(limiter, inner as typeof fetch, {
+      attempts: 3,
+      sleep: clock.sleep,
+      random: () => 0,
+    });
+    const response = await wrapped('https://rpc.invalid', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'getSlot' }),
+    });
+    expect(response.status).toBe(429);
+    expect(inner).toHaveBeenCalledTimes(3);
+    expect(sleeps.filter((ms) => ms >= 1_000)).toEqual([1_000, 2_000]);
+  });
+
+  it('passes non-429 failures straight through without retrying', async () => {
+    const { clock, sleeps } = fakeClock();
+    const limiter = new RpcCuRateLimiter(240, clock);
+    const inner = vi.fn(async () => new Response('{}', { status: 500 }));
+    const wrapped = rateLimitedFetch(limiter, inner as typeof fetch, { sleep: clock.sleep });
+    const response = await wrapped('https://rpc.invalid', {
+      method: 'POST',
+      body: JSON.stringify({ method: 'getSlot' }),
+    });
+    expect(response.status).toBe(500);
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
+  });
+
   it('serializes concurrent callers and waits for CU refill', async () => {
     let now = 0;
     const sleeps: number[] = [];

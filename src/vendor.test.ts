@@ -51,12 +51,19 @@ describe('withRetry vendored core', () => {
 });
 
 describe('vendored solana connection', () => {
-  it('returns a Connection honoring the config commitment', () => {
-    const cfg = loadConfig(baseEnv({ SOLANA_RPC_WRITE_URL: 'https://rpc-write.test' }));
+  it('returns read and write Connections honoring the configured endpoints', () => {
+    const cfg = loadConfig(baseEnv({
+      SOLANA_RPC_WRITE_URL: 'https://rpc-write.test',
+      SOLANA_WS_URL: 'wss://rpc-stream.test/ws/key',
+    }));
     const read = getSolanaConnection(cfg);
     expect((read as { _rpcEndpoint?: string })._rpcEndpoint).toBe('https://rpc.test');
+    expect((read as { _rpcWsEndpoint?: string })._rpcWsEndpoint)
+      .toBe('wss://rpc-stream.test/ws/key');
     const write = getSolanaConnection(cfg, { write: true });
     expect((write as { _rpcEndpoint?: string })._rpcEndpoint).toBe('https://rpc-write.test');
+    expect((write as { _rpcWsEndpoint?: string })._rpcWsEndpoint)
+      .toBe('wss://rpc-stream.test/ws/key');
   });
 });
 

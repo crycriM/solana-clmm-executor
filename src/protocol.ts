@@ -1,13 +1,13 @@
 /**
  * Wire protocol for solana-clmm-executor.
  *
- * Source of truth for the JSON-lines contract with dlmm-bot's
- * `dlmm_bot.exec_bridge.ExecBridge`. Field names here are fixed by the Python
- * side — renaming one breaks the keeper silently. See project_docs/opms-spec.md.
+ * This module defines the JSON-lines contract consumed by the external keeper.
+ * Field names are part of the compatibility boundary and must not be renamed
+ * without updating both sides.
  *
  * Raw on-chain u64 amounts are `string`, never `number`: they exceed
- * Number.MAX_SAFE_INTEGER and lp-monitor's `BN.toNumber()` pattern must not be
- * copied here.
+ * Number.MAX_SAFE_INTEGER, so values must remain strings throughout the
+ * protocol.
  */
 
 export type RawAmount = string;
@@ -67,7 +67,7 @@ export interface SwapRequest {
   /** Decimal, in in_mint units. */
   amount: number;
   max_slippage_bps: number;
-  /** null → route via Jupiter; set → swap against that DLMM pool. */
+  /** The DLMM pool to swap against. `null` (aggregator route) is on stand-by. */
   pool: string | null;
 }
 
@@ -76,6 +76,8 @@ export interface SwapSpec {
   out_mint: string;
   amount: number;
   max_slippage_bps?: number;
+  /** Rebalance pool; defaults to the pool being redeposited into. */
+  pool?: string;
 }
 
 export interface DepositSpec {
@@ -98,9 +100,19 @@ export interface RefreshBundleRequest {
   deposit_spec: DepositSpec;
 }
 
+/** Read-only price scouting across POOL_ALLOWLIST; never signs or submits. */
+export interface QuoteSwapRequest {
+  method: 'quote_swap';
+  in_mint: string;
+  out_mint: string;
+  amount: number;
+  max_slippage_bps: number;
+}
+
 export type ExecRequest =
   | GetStateRequest
   | GetPositionRequest
+  | QuoteSwapRequest
   | DepositSingleSidedRequest
   | WithdrawRequest
   | SwapRequest
@@ -196,6 +208,27 @@ export interface SwapData {
   route: string;
 }
 
+export interface PoolQuote {
+  pool: string;
+  amount_out: number;
+  amount_out_raw: RawAmount;
+  /** The bound `swap` would enforce for this pool at the same slippage cap. */
+  min_out_raw: RawAmount;
+  price: number;
+}
+
+/**
+ * Quotes are ordered best-output first. A pool that cannot fill the exact-in
+ * amount within bounds is reported in `rejected` rather than omitted silently.
+ * Reward-enabled and transfer-hook pools quote here but still fail closed on
+ * `swap`, which stays authoritative.
+ */
+export interface QuoteSwapData {
+  quotes: PoolQuote[];
+  rejected: { pool: string; error: ErrorCode }[];
+  best_pool: string | null;
+}
+
 export interface DepositData {
   position_id: string;
   pool: string;
@@ -208,14 +241,25 @@ export interface DepositData {
 }
 
 export interface RefreshBundleData {
-  /** New position after redeposit. */
+  /** New position after redeposit (the first opened leg; bid before ask). */
   position_id: string | null;
-  /** How far we got — set on failure so the keeper reconciles from chain. */
-  stage: 'withdrew' | 'swapped' | 'deposited' | 'bundle_dropped';
+  /** Every position the refresh opened, in leg order. A two-sided redeposit
+   * lands in two distinct PDAs; callers must track and withdraw all of them.
+   * Absent when no deposit leg opened a position. */
+  position_ids?: string[];
+  /** How far we got — set on failure so the keeper reconciles from chain.
+   *  Omitted when no mutation landed at all (the error alone is complete). */
+  stage?: 'withdrew' | 'swapped' | 'deposited' | 'bundle_dropped';
+  detail?: string;
+  pending_signature?: string | null;
   fees_claimed?: WithdrawData['fees_claimed'];
   amounts_returned?: WithdrawData['amounts_returned'];
   swap?: SwapData;
-  bundle_id?: string;
+  bundle_id?: string | null;
+  /** Ordered signed component signatures, present once a bundle was forwarded. */
+  component_signatures?: string[];
+  /** Block-height expiry bound shared by every bundle component. */
+  last_valid_block_height?: number | null;
 }
 
 // ------------------------------------------------------------ swap stream
@@ -259,6 +303,7 @@ export interface SwapStreamRow {
 export interface ExecHandlers {
   get_state(req: GetStateRequest): Promise<ExecResponse<StateData>>;
   get_position(req: GetPositionRequest): Promise<ExecResponse<PositionData>>;
+  quote_swap(req: QuoteSwapRequest): Promise<ExecResponse<QuoteSwapData>>;
   deposit_single_sided(req: DepositSingleSidedRequest): Promise<ExecResponse<DepositData>>;
   withdraw(req: WithdrawRequest): Promise<ExecResponse<WithdrawData>>;
   swap(req: SwapRequest): Promise<ExecResponse<SwapData>>;

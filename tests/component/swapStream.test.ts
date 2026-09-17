@@ -1,4 +1,4 @@
-/** Plan §7 components gate: SWAP_STREAM_PATH handling (spec §6). */
+/** Component coverage for SWAP_STREAM_PATH handling. */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,7 +33,7 @@ describe('swap stream file', () => {
   it('no decoded swap is ever fabricated: the file stays empty with no feed', () => {
     // The stream is live but the RPC in this environment delivers nothing, so
     // the file may be created yet must contain no rows. A single synthetic row
-    // here would become a fake fill in verify_log.py (spec §6).
+    // here would become a fake fill in downstream verification.
     const scratch = scratchEnv();
     try {
       run(scratch, [requestsByVerb.swap, { ...requestsByVerb.swap!, pool: '11111111111111111111111111111111' }]
@@ -49,7 +49,7 @@ describe('swap stream file', () => {
   });
 
   it('the bridge never writes anything but responses to stdout while streaming', () => {
-    // The stream shares the process with the verb loop (spec §2). Any stray
+    // The stream shares the process with the verb loop. Any stray
     // write from it corrupts the protocol channel.
     const scratch = scratchEnv();
     try {
@@ -69,8 +69,8 @@ describe('swap stream file', () => {
 
   it('containment: a stream that cannot start still serves the verb loop', () => {
     // An unwritable stream path must not take the executor down with it; the
-    // failure is reported on stderr instead (spec §6: the missing feed makes
-    // verify_log.py fail closed, which is visible without a crash).
+    // failure is reported on stderr instead; downstream verification can then
+    // fail closed without taking down the verb loop.
     const scratch = scratchEnv({ SWAP_STREAM_PATH: '/dev/null/unwritable/swaps.jsonl' });
     try {
       const result = run(scratch, JSON.stringify(requestsByVerb.get_state) + '\n');
@@ -87,7 +87,7 @@ describe('swap stream file', () => {
   it('terminates when stdin closes instead of hanging on the stream socket', () => {
     // The stream's RPC websocket holds timers and handles; if they outlive the
     // verb loop the executor never exits and ExecBridge never sees the restart
-    // it relies on (spec §2).
+    // it relies on.
     const scratch = scratchEnv();
     try {
       const result = run(scratch, JSON.stringify(requestsByVerb.get_state) + '\n');

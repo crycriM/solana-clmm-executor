@@ -1,4 +1,4 @@
-/** Plan §7 components gate: §9 config surface enforced at subprocess startup. */
+/** Component coverage for configuration enforcement at subprocess startup. */
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { requestsByVerb } from '../helpers/requests.js';

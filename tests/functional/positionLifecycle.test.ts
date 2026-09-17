@@ -1,4 +1,4 @@
-/** Plan §8.3/§8.4 — dust position lifecycle + per-bin placement readback. Opt-in only (RUN_LIVE=1). */
+/** Dust position lifecycle and per-bin placement readback. Opt-in only (RUN_LIVE=1). */
 import BN from 'bn.js';
 import { LBCLMM_PROGRAM_IDS, derivePosition } from '@meteora-ag/dlmm';
 import { PublicKey } from '@solana/web3.js';
@@ -59,7 +59,7 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
         max_active_bin_slippage: Number(process.env['LIVE_MAX_ACTIVE_BIN_SLIPPAGE']),
         strategy_type: 'Spot' as const,
       };
-      run.recorder.beforeAfter('wallet', null, before.data);
+      run.recorder.beforeAfter('wallet', before.data, null);
 
       const deposit = await run.client.request(depositRequest);
       submissionAmbiguous ||= deposit.error === 'submission_ambiguous';
@@ -78,10 +78,29 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
       const rawField = side === 'bid' ? 'amount_quote_raw' : 'amount_base_raw';
       const realizedTotal = realized.reduce((sum, bin) => sum + BigInt(bin[rawField]), 0n);
       expect(realizedTotal).toBeGreaterThan(0n);
+      const postState = await run.client.request({ method: 'get_state', pool: process.env['LIVE_POOL']! });
+      expect(postState.ok).toBe(true);
+      const postActive = Number((postState.data as { active_bin: number }).active_bin);
+      const tokenDecimals = Number(
+        (postState.data as { token_x: { decimals: number }; token_y: { decimals: number } })
+        [side === 'bid' ? 'token_y' : 'token_x'].decimals,
+      );
+      const maxDebitRaw = BigInt(
+        Math.round(depositsEnv.reduce((sum, value) => sum + value, 0) * 10 ** tokenDecimals),
+      );
+      expect(realizedTotal).toBeLessThanOrEqual(maxDebitRaw);
+      const driftBins = Math.abs(postActive - expectedActiveBin);
       const toleranceBps = Number(process.env['LIVE_WEIGHT_TOLERANCE_BPS'] ?? 100);
-      for (const [index, bin] of realized.entries()) {
-        const actualBps = Number((BigInt(bin[rawField]) * 10_000n) / realizedTotal);
-        expect(Math.abs(actualBps - created.bins[index]!.target_bps)).toBeLessThanOrEqual(toleranceBps);
+      if (driftBins === 0) {
+        for (const [index, bin] of realized.entries()) {
+          const actualBps = Number((BigInt(bin[rawField]) * 10_000n) / realizedTotal);
+          expect(Math.abs(actualBps - created.bins[index]!.target_bps)).toBeLessThanOrEqual(toleranceBps);
+        }
+      } else {
+        run.recorder.decision(
+          `active bin drifted ${driftBins} bins during the dust window; per-bin weights reflect `
+          + `price conversion, only the aggregate debit bound (<= ${maxDebitRaw}) is asserted`,
+        );
       }
       run.recorder.setPosition(positionId!, onChain);
 
@@ -100,8 +119,10 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
       expect(addedTotal).toBeGreaterThan(realizedTotal);
       run.recorder.setPosition(positionId!, addedReadback.data);
 
-      const partial = await run.client.request({ method: 'withdraw', position_id: positionId!, bps: 50 });
+      const partialRequest = { method: 'withdraw' as const, position_id: positionId!, bps: 50 };
+      const partial = await run.client.request(partialRequest);
       submissionAmbiguous ||= partial.error === 'submission_ambiguous';
+      run.recorder.exchange(partialRequest, partial);
       expect(partial.ok).toBe(true);
       expect((partial.data as WithdrawData).closed).toBe(false);
       run.recorder.cleanupOperation(`withdraw 50% from ${positionId}`);
@@ -113,6 +134,9 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
       expect(full.transactions[0]?.status).toBe('finalized');
       run.recorder.exchange({ method: 'withdraw', position_id: positionId!, bps: 100 }, full);
       run.recorder.cleanupOperation(`withdraw 100% from ${positionId} (cleanup)`);
+      const after = await run.client.request({ method: 'get_state', pool: process.env['LIVE_POOL']! });
+      expect(after.ok).toBe(true);
+      run.recorder.beforeAfter('wallet', null, after.data);
 
       status = 'clean';
     } finally {

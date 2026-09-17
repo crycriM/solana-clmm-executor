@@ -1,4 +1,4 @@
-/** Plan §7 components gate: restart, per-run audit logs, and req_seq reset. */
+/** Component coverage for restart, per-run audit logs, and req_seq reset. */
 import fs from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { ExecutorAuditLine } from '../helpers/stdioClient.js';

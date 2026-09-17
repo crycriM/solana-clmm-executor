@@ -91,7 +91,7 @@ describe('DLMM event decoder', () => {
       from: FROM,
       startBinId: 8123,
       endBinId: 8127,
-      // Above 2^53 — the BN.toNumber() hazard (spec §5).
+      // Above 2^53 — the BN.toNumber() hazard.
       amountIn: '10000000411680503305',
       amountOut: '1760200000',
       swapForY: true,

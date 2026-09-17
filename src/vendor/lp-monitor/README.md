@@ -1,31 +1,17 @@
-# Vendored lp-monitor sources
+# Vendored read adapters
 
-Copied, never imported (implementation-plan T0.5 amendment): this project must
-build standalone, upstream never gains signing authority, and neither side
-imports from the other. Trimmed to what M2–M3 need.
+This directory contains isolated, read-only adapters used by the executor. The
+copies keep this project standalone and have no signing authority or runtime
+import from another repository.
 
-Pinned upstream SHA: `aacfe017291681164a1a23b756f4516768699ad0`
-(`LP-hedging-strategy` repo, `lp-monitor/` directory).
+| File | Purpose |
+|---|---|
+| `solana.ts` | Solana connection and endpoint handling |
+| `logger.ts` | STDERR logging and executor log formatting |
+| `types.ts` | Meteora position types with exact raw amounts |
+| `meteoraReads.ts` | Read-only pool and position access with retries |
+| `tokenMapping.ts` | Rate-limited in-memory token metadata cache |
 
-| Vendored file | Upstream path | Strip / delta |
-|---|---|---|
-| `solana.ts` | `lp-monitor/src/chains/solana.ts` | endpoint from this project's config; commitment arg + distinct write endpoint (`SOLANA_RPC_WRITE_URL`) |
-| `logger.ts` | `lp-monitor/src/utils/logger.ts` | console transport → stderr (spec §5); log dir via config injection |
-| `types.ts` | `lp-monitor/src/services/types.ts` | Krystal + error-flag types dropped; `*_raw` string fields added (spec §3.2) |
-| `meteoraReads.ts` | `lp-monitor/src/dexes/meteoraDlmmAdapter.ts` | Read-only fetch/map + retry retained; CSV writer, tracking, fetchDeposits, file logging stripped; raw BN/string amounts preserved, proportional SDK amounts floored to raw units; decimals from SDK mint reserves, bin IDs corrected; USD enrichment left to M2 |
-| `tokenMapping.ts` | `lp-monitor/src/services/tokenMappingService.ts` | CSV persistence stripped → in-memory cache; rate limit + batched price fetch kept |
-
-Drift check (mechanical):
-
-```bash
-git -C ../LP-hedging-strategy show aacfe017291681164a1a23b756f4516768699ad0:lp-monitor/src/<upstream path>
-```
-
-Run from the executor project root, then diff against the vendored copy. Any intentional delta must be recorded
-in the file header. Upstream fixes are pulled by re-copying and bumping the
-SHA in the header — a deliberate reviewed step, not an automatic import.
-
-## Hard exclusions never carried over
-
-- `BN.toNumber()` on u64 amounts (`BN.toString()` / decimal.js only)
-- All CSV persistence (`csv-writer`) — this project's persistence is JSONL
+The adapters intentionally omit CSV persistence and preserve large on-chain
+amounts as strings alongside decimal-scaled values. Changes should retain those
+properties and the read-only boundary.

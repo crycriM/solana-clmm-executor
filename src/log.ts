@@ -1,14 +1,14 @@
 /**
- * Executor JSONL ledger per spec §7 (opms-spec.md).
+ * Executor JSONL audit ledger.
  *
  * Every verb invocation writes one line with the timing, redacted request,
  * full response envelope, and chain metadata. Also carries the standing line
  * types: executor_started, executor_stream_gap, policy_rejected,
  * rpc_failover.
  *
- * Redaction (hard rule, spec §7): private keys, KMS material, signed tx
- * bytes, and env dumps are stripped before anything is written. Wallet
- * pubkey and signatures pass through.
+ * Private keys, KMS material, signed transaction bytes, and environment dumps
+ * are stripped before anything is written. Wallet public keys and signatures
+ * pass through.
  */
 
 import fs from 'node:fs';
@@ -25,7 +25,7 @@ export type JsonObject = { [k: string]: Json };
 // while pubkeys/signatures are 43-45 or 88 chars — indistinguishable by
 // shape, so the filter keys primarily on field names, with a length-floor
 // heuristic only where field names give no hint. Known-safe field names
-// (wallet pubkey + signatures) always pass (spec §7).
+// (wallet pubkey + signatures) always pass.
 const SECRET_FIELD_RE =
   /(secret|privat|priv|seed_pair|mnemonic|bip39|wallet_secret|kms_plaintext|signing_key)/i;
 const TX_BYTES_FIELD_RE = /(tx_bytes|signed_transaction|serialized_tx|payload_bytes)/i;
@@ -116,6 +116,8 @@ export interface VerbLine {
   simulation_ok: boolean | null;
   simulation_logs?: string[];
   policy_decision: string | null;
+  /** sha256 of every message this verb validated for signing, in signing order. */
+  message_hashes: string[];
   signer_id: string | null;
   bundle_id: string | null;
 }
@@ -167,19 +169,36 @@ export interface RpcFailoverLine {
   error: string;
 }
 
+/**
+ * One Jito bundle attempt (plan T5.3): the ordered component signatures, the
+ * shared block-height bound, every observed status transition, and the final
+ * classification. Serialized transactions themselves never appear here.
+ */
+export interface JitoBundleLine {
+  kind: 'jito_bundle';
+  ts: number;
+  method: string;
+  bundle_id: string | null;
+  component_signatures: string[];
+  last_valid_block_height: number | null;
+  statuses: string[];
+  outcome: 'landed' | 'dropped' | 'ambiguous';
+}
+
 export type ExecutorLine =
   | VerbLine
   | ExecutorStartedLine
   | ExecutorStreamGapLine
   | PolicyRejectedLine
-  | RpcFailoverLine;
+  | RpcFailoverLine
+  | JitoBundleLine;
 
 function redactLine(line: ExecutorLine): JsonObject {
   const clone = redact(line as unknown as Json) as JsonObject;
   return clone;
 }
 
-/** Daily rotation + gzip after 24h (spec §7). Files rotate per run anyway. */
+/** Daily rotation + gzip after 24h. Files rotate per run anyway. */
 export interface Rotator {
   maybeGzipOlder(dir: string, pattern: RegExp): void;
 }

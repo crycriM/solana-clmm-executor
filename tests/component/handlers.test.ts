@@ -1,4 +1,4 @@
-/** Plan §7 components gate: handler data surfaces over the compiled CLI. */
+/** Component coverage for handler data surfaces over the compiled CLI. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DepositData, ExecResponse, PositionData, StateData, SwapData, WithdrawData } from '../../src/protocol.js';
 import { requestsByVerb } from '../helpers/requests.js';
@@ -75,10 +75,10 @@ describe('handler write surfaces', () => {
     expect(data.closed).toBe(false);
   });
 
-  it('swap routes through Jupiter when pool is null', async () => {
+  it('swap reports the direct pool route', async () => {
     const response = await client.request(requestsByVerb.swap!);
     const data = response.data as SwapData;
-    expect(data.route).toBe('jupiter');
+    expect(data.route).toBe('meteora');
     expect((<ExecResponse>response).transactions).toHaveLength(1);
   });
 });

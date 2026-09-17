@@ -1,14 +1,14 @@
 /**
- * KMS Ed25519 signer compatibility spike (test plan §5.1, delivery step 2).
+ * KMS Ed25519 signer compatibility checks.
  *
- * Runs the seven checks the test plan requires before the KMS signer may be
- * used for Meteora tests, and writes a JSON evidence artifact to stdout.
+ * Runs the checks required before the KMS signer may be used for live tests,
+ * and writes a JSON evidence artifact to stdout.
  * Human progress goes to stderr so `... > evidence.json` stays clean.
  *
  *   KMS_KEY_ARN=arn:... SOLANA_RPC_URL=https://... npx tsx src/tools/kmsSpike.ts
  *
  * On-chain steps (dust self-transfer, legacy + versioned) are skipped unless
- * LIVE_WRITE_CONFIRM=yes, matching the test plan §10 live-write control.
+ * LIVE_WRITE_CONFIRM=yes, matching the live-write safety control.
  */
 
 import {
@@ -20,6 +20,11 @@ import {
   VersionedTransaction,
 } from '@solana/web3.js';
 import { createKmsSigner, type Signer } from '../signer.js';
+import {
+  DEFAULT_RPC_MAX_CU_PER_SECOND,
+  rateLimitedFetch,
+  sharedRpcLimiter,
+} from '../rpcRateLimit.js';
 
 type Status = 'pass' | 'fail' | 'skipped';
 
@@ -67,7 +72,7 @@ function selfTransfer(wallet: PublicKey) {
   return SystemProgram.transfer({ fromPubkey: wallet, toPubkey: wallet, lamports: 1 });
 }
 
-/** Sign, submit, and wait for `finalized` — the test plan's bar for the spike. */
+/** Sign, submit, and wait for `finalized`. */
 async function submitAndFinalize(
   connection: Connection,
   raw: Buffer | Uint8Array,
@@ -119,7 +124,15 @@ async function main(): Promise<number> {
   const rpcUrl = required('SOLANA_RPC_URL');
   const liveWrites = process.env['LIVE_WRITE_CONFIRM'] === 'yes';
   const sampleCount = Number(process.env['SPIKE_LATENCY_SAMPLES'] ?? 20);
-  const connection = new Connection(rpcUrl, 'confirmed');
+  const maxCuPerSecond = Number(
+    process.env['SOLANA_RPC_MAX_CU_PER_SECOND'] ?? DEFAULT_RPC_MAX_CU_PER_SECOND,
+  );
+  const connection = new Connection(rpcUrl, {
+    commitment: 'confirmed',
+    fetch: rateLimitedFetch(sharedRpcLimiter(rpcUrl, maxCuPerSecond)),
+    // Retries must re-enter the CU budget instead of web3.js's opaque loop.
+    disableRetryOnRateLimit: true,
+  });
 
   let signer: Signer | undefined;
 

@@ -1,9 +1,6 @@
-// vendored from LP-hedging-strategy/lp-monitor/src/utils/logger.ts @ git aacfe017291681164a1a23b756f4516768699ad0
-// co-maintained; strip = console transport moved to STDERR (opms-spec §5:
-// stdout is the protocol channel), file path roots in this project's
-// EXECUTOR_LOG_DIR via config injection instead of LP_HEDGE_LOG_DIR/`../logs`.
-// Delta (M0 review): idempotent transport setup; all levels go to stderr.
-// Do not edit in place without noting the delta here.
+// Read-only logging adapter. Console output is sent to STDERR so STDOUT
+// remains reserved for the JSON-lines protocol; file paths are supplied by
+// executor configuration. The transport setup is idempotent.
 
 import winston from 'winston';
 import { TransformableInfo } from 'logform';

@@ -1,4 +1,9 @@
-/** Plan §8.4/§8.7 — refresh_bundle end-to-end keeper verb flow. Opt-in only (RUN_LIVE=1). */
+/**
+ * refresh_bundle end-to-end flow. Opt-in only
+ * (RUN_LIVE=1 plus RUN_LIVE_M5=1). With JITO_ENABLED=true on the executor this
+ * same request exercises the bundle path and the response carries
+ * `data.bundle_id` plus ordered `component_signatures`.
+ */
 import { describe, expect, it } from 'vitest';
 import type { RefreshBundleRequest, PositionData } from '../../src/protocol.js';
 import { finishLiveRun, liveM5RunnerInfo, startLiveRun } from './setup.js';
@@ -48,7 +53,7 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
       run.recorder.exchange(request, response);
 
       // The old position must be fully gone; partial stage means reconcile
-      // from chain (plan §8.9) — the test records, never retries.
+      // from chain — the test records, never retries.
       const oldGone = await run.client.request({ method: 'withdraw', position_id: positionId, bps: 1 });
       expect(oldGone.ok).toBe(false);
       run.recorder.decision(`old position ${positionId} reported ${oldGone.error} after full refresh`);
@@ -59,10 +64,23 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
       expect(after.data ? (after.data as PositionData).position_id : undefined).toBeTruthy();
       run.recorder.setPosition(data.position_id!, after.data);
       run.recorder.beforeAfter(`position:${positionId}`, before.data, after.data);
+
+      // The re-deposited position is owned by this run; close it so the
+      // campaign leaves no test-created exposure.
+      const close = await run.client.request({
+        method: 'withdraw', position_id: data.position_id!, bps: 100,
+      });
+      run.recorder.exchange(
+        { method: 'withdraw', position_id: data.position_id!, bps: 100 }, close,
+      );
+      expect(close.ok).toBe(true);
+      expect((close.data as { closed: boolean }).closed).toBe(true);
+      expect(close.transactions[0]?.status).toBe('finalized');
+      run.recorder.cleanupOperation(`withdraw 100% from ${data.position_id} (cleanup)`);
       status = 'clean';
     } finally {
       const artifact = await finishLiveRun(run, status);
       expect(artifact).toMatch(/artifact-.+\.json$/);
     }
-  });
+  }, 360_000);
 });

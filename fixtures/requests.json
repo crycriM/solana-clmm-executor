@@ -7,6 +7,13 @@
     "method": "get_position",
     "position_id": "stub_position_001"
   },
+  "quote_swap": {
+    "method": "quote_swap",
+    "in_mint": "So11111111111111111111111111111111111111112",
+    "out_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "amount": 1,
+    "max_slippage_bps": 50
+  },
   "deposit_single_sided": {
     "method": "deposit_single_sided",
     "pool": "11111111111111111111111111111111",
@@ -34,7 +41,7 @@
     "out_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     "amount": 1,
     "max_slippage_bps": 50,
-    "pool": null
+    "pool": "11111111111111111111111111111111"
   },
   "refresh_bundle": {
     "method": "refresh_bundle",

@@ -6,7 +6,7 @@
     "amount_in_raw": "1000000000",
     "amount_out_raw": "150000000",
     "price_realized": 150,
-    "route": "jupiter",
+    "route": "meteora",
     "dry_run": true
   },
   "error": null,
