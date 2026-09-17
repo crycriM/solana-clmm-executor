@@ -8,7 +8,13 @@
 import { createRequire } from 'node:module';
 import DecimalDefault from 'decimal.js';
 import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-ag/dlmm';
-import { Connection, PublicKey, type AccountInfo, type ParsedAccountData } from '@solana/web3.js';
+import {
+  Connection,
+  PublicKey,
+  type AccountInfo,
+  type ParsedAccountData,
+  type Transaction,
+} from '@solana/web3.js';
 import type { ExecutorConfig } from './config.js';
 import type { ExecutorLine } from './log.js';
 import type { PositionData, StateData, TokenMeta } from './protocol.js';
@@ -33,6 +39,10 @@ const DlmmSdk = (
 ).default;
 const DLMM_PROGRAM_ID = new PublicKey(LBCLMM_PROGRAM_IDS['mainnet-beta']);
 const EMPTY_PUBLIC_KEY = new PublicKey('11111111111111111111111111111111');
+const SPL_TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const SPL_TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+/** SPL mint layout: decimals is the single byte after the 8-byte supply field. */
+const MINT_DECIMALS_OFFSET = 44;
 
 export class UnknownPositionError extends Error {}
 export class RpcReadError extends Error {}
@@ -57,10 +67,40 @@ export interface ReadConnection {
   getSlot(): Promise<number>;
 }
 
+/** One decoded bin array account, as the DLMM SDK hands it to `swapQuote`. */
+export interface SwapBinArray {
+  account: unknown;
+  publicKey: PublicKey;
+}
+
+/** The `swapQuote` result slice the direct-swap builder consumes (BN-shaped). */
+export interface SwapQuoteLike {
+  consumedInAmount: { toString(): string };
+  outAmount: { toString(): string };
+  minOutAmount: { toString(): string };
+  binArraysPubkey: PublicKey[];
+}
+
+export interface SwapCallParams {
+  inToken: PublicKey;
+  outToken: PublicKey;
+  inAmount: BnLike;
+  minOutAmount: BnLike;
+  lbPair: PublicKey;
+  user: PublicKey;
+  binArraysPubkey: PublicKey[];
+}
+
+/** Anything bn.js-shaped; keeps the interface open to structural fakes. */
+export interface BnLike {
+  toString(): string;
+}
+
 export interface PoolReader {
   readonly pubkey: PublicKey;
   readonly lbPair: {
     binStep: number;
+    oracle?: PublicKey;
     rewardInfos?: { mint: PublicKey }[];
   };
   readonly tokenX: {
@@ -80,6 +120,32 @@ export interface PoolReader {
   getActiveBin(): Promise<{ binId: number }>;
   getFeeInfo(): { baseFeeRatePercentage: { mul(value: number): { toString(): string } } };
   getPosition(address: PublicKey): Promise<LbPosition>;
+  /** Direct DLMM swap leg (plan T5.1); present on real SDK instances. */
+  getBinArrayForSwap?(swapForY: boolean, count?: number): Promise<SwapBinArray[]>;
+  swapQuote?(
+    inAmount: BnLike,
+    swapForY: boolean,
+    allowedSlippage: BnLike,
+    binArrays: SwapBinArray[],
+    isPartialFill?: boolean,
+    maxExtraBinArrays?: number,
+  ): SwapQuoteLike;
+  swap?(params: SwapCallParams): Promise<Transaction>;
+  readonly binArrayBitmapExtension?: { publicKey: PublicKey } | null;
+}
+
+/** A reader whose swap methods are known present (validated by `getSwapPoolReader`). */
+export interface SwapPoolReader extends PoolReader {
+  getBinArrayForSwap(swapForY: boolean, count?: number): Promise<SwapBinArray[]>;
+  swapQuote(
+    inAmount: BnLike,
+    swapForY: boolean,
+    allowedSlippage: BnLike,
+    binArrays: SwapBinArray[],
+    isPartialFill?: boolean,
+    maxExtraBinArrays?: number,
+  ): SwapQuoteLike;
+  swap(params: SwapCallParams): Promise<Transaction>;
 }
 
 export interface MeteoraReadDependencies {
@@ -100,6 +166,13 @@ export interface ReadAuditContext {
   readTimingsMs?: Record<string, number>;
   rpcCuWaitMs?: Record<string, number>;
   rpcHttpMs?: Record<string, number>;
+}
+
+/** Mint facts plus the wallet's raw balance for that mint (M5 swap preflight). */
+export interface MintState {
+  decimals: number;
+  tokenProgram: string;
+  walletBalanceRaw: string;
 }
 
 interface Endpoint {
@@ -312,6 +385,7 @@ export class MeteoraReads {
       return {
         pool: reader.pubkey,
         binStep: reader.lbPair.binStep,
+        oracle: reader.lbPair.oracle,
         activeRewardCount: (reader.lbPair.rewardInfos ?? [])
           .filter((reward) => !reward.mint.equals(EMPTY_PUBLIC_KEY)).length,
         tokenX: {
@@ -329,6 +403,25 @@ export class MeteoraReads {
           transferHookAccountCount: reader.tokenY.transferHookAccountMetas?.length ?? 0,
         },
       };
+    });
+  }
+
+  /**
+   * The cached SDK reader for a direct DLMM swap (plan T5.1 `pool` set path),
+   * validated to carry the quote/swap surface before it leaves this class.
+   */
+  async getSwapPoolReader(poolAddress: string): Promise<SwapPoolReader> {
+    this.beginOperation();
+    if (!this.config.poolAllowlist.includes(poolAddress)) {
+      throw new InvalidPoolError('Pool is not allow-listed');
+    }
+    return this.rpc(async (endpoint) => {
+      const entry = await this.pool(endpoint, poolAddress);
+      const reader = this.reader(entry, endpoint);
+      if (!reader.getBinArrayForSwap || !reader.swapQuote || !reader.swap) {
+        throw new RpcReadError('SDK reader lacks the direct-swap surface');
+      }
+      return reader as SwapPoolReader;
     });
   }
 
@@ -399,16 +492,44 @@ export class MeteoraReads {
 
   private async walletBalance(
     endpoint: Endpoint,
-    mint: TokenMeta,
+    mint: string,
   ): Promise<{ raw: string; slot: number }> {
     const response = await endpoint.connection.getParsedTokenAccountsByOwner(this.wallet, {
-      mint: new PublicKey(mint.mint),
+      mint: new PublicKey(mint),
     });
     const raw = response.value.reduce(
       (sum, tokenAccount) => sum + BigInt(parsedTokenRaw(tokenAccount.account.data)),
       0n,
     );
     return { raw: raw.toString(), slot: response.context.slot };
+  }
+
+  /**
+   * Mint metadata plus the wallet's aggregate balance, for verbs (M5 `swap`)
+   * that address tokens by mint rather than by an allow-listed pool.
+   */
+  async getMintState(mintAddress: string): Promise<MintState> {
+    this.beginOperation();
+    let mint: PublicKey;
+    try {
+      mint = new PublicKey(mintAddress);
+    } catch {
+      throw new InvalidPoolError('Mint is not allow-listed');
+    }
+    if (!this.config.mintAllowlist.includes(mintAddress)) {
+      throw new InvalidPoolError('Mint is not allow-listed');
+    }
+    const account = await this.rpc((endpoint) =>
+      endpoint.connection.getAccountInfoAndContext(mint));
+    const owner = account.value?.owner.toBase58();
+    if (!account.value ||
+        (owner !== SPL_TOKEN_PROGRAM_ID && owner !== SPL_TOKEN_2022_PROGRAM_ID) ||
+        account.value.data.length <= MINT_DECIMALS_OFFSET) {
+      throw new InvalidPoolError('Mint is not an SPL token account');
+    }
+    const decimals = account.value.data[MINT_DECIMALS_OFFSET]!;
+    const balance = await this.rpc((endpoint) => this.walletBalance(endpoint, mintAddress));
+    return { decimals, tokenProgram: owner, walletBalanceRaw: balance.raw };
   }
 
   private async reserveBalance(
@@ -460,8 +581,8 @@ export class MeteoraReads {
       };
       const [active, walletX, walletY, reserveX, reserveY, prices] = await Promise.all([
         measure('active_bin', () => pool.getActiveBin()),
-        measure('wallet_base', () => this.walletBalance(endpoint, metadata.tokenX)),
-        measure('wallet_quote', () => this.walletBalance(endpoint, metadata.tokenY)),
+        measure('wallet_base', () => this.walletBalance(endpoint, metadata.tokenX.mint)),
+        measure('wallet_quote', () => this.walletBalance(endpoint, metadata.tokenY.mint)),
         measure('reserve_base', () => this.reserveBalance(endpoint, metadata.reserveX)),
         measure('reserve_quote', () => this.reserveBalance(endpoint, metadata.reserveY)),
         measure('prices', () => this.poolPrices(metadata)),

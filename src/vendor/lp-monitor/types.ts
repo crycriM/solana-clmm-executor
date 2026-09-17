@@ -1,9 +1,6 @@
-// vendored from LP-hedging-strategy/lp-monitor/src/services/types.ts @ git aacfe017291681164a1a23b756f4516768699ad0
-// co-maintained; strip = Krystal position + error-flag types dropped (Meteora
-// only). Delta: *_raw string fields added so raw BN-sized amounts ride beside
-// every decimal without BN.toNumber() (opms-spec §3.2, §5).
-// Delta (M0 review): per-bin raw fields are required, like position totals.
-// Do not edit in place without noting the delta here.
+// Meteora-only position types. Raw string fields accompany every decimal-scaled
+// amount so BN-sized values remain exact; per-bin raw fields mirror position
+// totals.
 
 import { RawAmount } from '../../protocol.js';
 
@@ -16,7 +13,7 @@ export interface LiquidityProfileEntry {
   /** Quote-token amount in this bin, decimal-scaled */
   positionYAmount: string;
   liquidityShare: string;
-  /** Raw on-chain u64-as-string beside every decimal field (spec §3.2). */
+  /** Raw on-chain u64-as-string beside every decimal field. */
   positionXAmount_raw: RawAmount;
   positionYAmount_raw: RawAmount;
 }

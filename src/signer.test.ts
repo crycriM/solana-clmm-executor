@@ -221,7 +221,9 @@ describe('createFileSigner (arm B)', () => {
       const message = (error as Error).message;
       expect(message).toContain(other);
       expect(message).toContain(keypair.publicKey.toBase58());
-      expect(message).not.toContain(String(keypair.secretKey[0]));
+      // Single secret bytes collide with base58/decimal substrings by chance;
+      // probe a distinctive contiguous run of the serialized secret array.
+      expect(message).not.toContain(keypair.secretKey.slice(0, 4).join(','));
     }
   });
 

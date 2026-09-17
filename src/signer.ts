@@ -1,15 +1,14 @@
 /**
- * Wallet signing (test plan §5, spec §8, plan T4.1). Two deployment arms:
+ * Wallet signing with two deployment arms:
  *
- * - Arm A, `createKmsSigner` (§5.1): cloud. The private key stays inside AWS
- *   KMS and is not extractable; each signature costs a network round trip.
- * - Arm B, `createFileSigner` (§5.5): a single-tenant server holding the
- *   keypair on disk. Signing is in-process; custody rests entirely on
- *   filesystem permissions.
+ * - `createKmsSigner`: cloud custody. The private key stays inside AWS KMS and
+ *   is not extractable; each signature costs a network round trip.
+ * - `createFileSigner`: a single-tenant server holding the keypair on disk.
+ *   Signing is in-process; custody rests entirely on filesystem permissions.
  *
  * Both produce a 64-byte Ed25519 signature over a serialized Solana message,
- * and both are subject to the same §6 transaction policy — the arm changes
- * where the key lives, nothing else.
+ * and both are subject to the same transaction policy — the arm changes where
+ * the key lives, nothing else.
  *
  * The KMS path never holds private key material: a serialized Solana message
  * goes to KMS, a 64-byte Ed25519 signature comes back. AWS KMS gained Ed25519
@@ -53,7 +52,7 @@ export class SignerError extends Error {}
 export interface Signer {
   /** The Solana address this signer controls. */
   readonly publicKey: PublicKey;
-  /** Signer identity for the executor JSONL (spec §7); never key material. */
+  /** Signer identity for the executor JSONL; never key material. */
   readonly signerId: string;
   /** 64-byte Ed25519 signature over `message`, locally verified before return. */
   sign(message: Uint8Array): Promise<Buffer>;
@@ -119,7 +118,7 @@ async function kmsSign(
 ): Promise<Buffer> {
   // ponytail: SDK default retries/timeouts. A KMS timeout or AccessDenied
   // throws out of here and the caller never gets a signature — that is the
-  // required fail-closed behaviour (test plan §5.1), so no handling is added.
+  // required fail-closed behaviour, so no handling is added.
   const response = await client.send(
     new SignCommand({
       KeyId: keyArn,
@@ -184,7 +183,7 @@ export async function createConfiguredSigner(
 }
 
 /**
- * Deployment arm B (test plan §5.5): the keypair lives in a file on a
+ * File-based signing: the keypair lives in a file on a
  * single-tenant server and signing happens in-process.
  *
  * Weaker custody than KMS by construction — root and anyone who can read the

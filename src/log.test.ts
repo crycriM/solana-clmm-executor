@@ -31,6 +31,7 @@ describe('executor log', () => {
     log.write({
       kind: 'verb',
       req_seq: 1,
+      message_hashes: [],
       method: 'swap',
       received_at: 1,
       responded_at: 2,
@@ -59,6 +60,7 @@ describe('executor log', () => {
     log.write({
       kind: 'verb',
       req_seq: 2,
+      message_hashes: [],
       method: 'get_state',
       received_at: 1,
       responded_at: 2,

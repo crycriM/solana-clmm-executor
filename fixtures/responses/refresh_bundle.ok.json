@@ -2,6 +2,10 @@
   "ok": true,
   "data": {
     "position_id": "stub_position_001",
+    "position_ids": [
+      "stub_position_001",
+      "stub_position_002_ask"
+    ],
     "stage": "deposited",
     "fees_claimed": {
       "x": 0.003,

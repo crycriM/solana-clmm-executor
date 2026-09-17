@@ -1,8 +1,5 @@
-// vendored from LP-hedging-strategy/lp-monitor/src/services/tokenMappingService.ts @ git aacfe017291681164a1a23b756f4516768699ad0
-// co-maintained; strip = CSV persistence (createObjectCsvWriter, the
-// lp-data/token_mappings.csv file) removed per opms-spec §5 "must not copy";
-// the CSV cache became an in-memory cache (disk persistence dropped). Rate-limit +
-// in-memory fetch cache retained. Do not edit in place without noting the delta here.
+// Token mapping cache. Disk persistence is intentionally omitted; rate limiting
+// and the in-memory fetch cache are retained.
 
 import axios from 'axios';
 
@@ -15,7 +12,7 @@ export interface TokenMapping {
   decimals: number;
 }
 
-// Rate limiter: min delay between upstream HTTP calls
+// Rate limiter: minimum delay between remote HTTP calls
 let lastCallTimestamp = 0;
 const MIN_DELAY_MS = 3000;
 
@@ -27,7 +24,7 @@ async function rateLimit(): Promise<void> {
   lastCallTimestamp = Date.now();
 }
 
-// Fetch cache so each token's upstream hit happens once per process.
+// Fetch cache so each token is requested once per process.
 const mappingCache = new Map<string, TokenMapping | null>();
 
 async function withRetry<T>(fn: () => Promise<T>, retries = 4, baseDelayMs = 2000): Promise<T> {

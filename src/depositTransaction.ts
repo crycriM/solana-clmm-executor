@@ -33,6 +33,8 @@ export interface WritablePoolToken {
 export interface WritablePoolMetadata {
   pool: PublicKey;
   binStep: number;
+  /** Price oracle; required by the direct DLMM swap leg, unused by deposits. */
+  oracle?: PublicKey;
   /** First write gate excludes pools whose rewards require extra claim accounts. */
   activeRewardCount?: number;
   tokenX: WritablePoolToken;

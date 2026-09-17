@@ -28,7 +28,7 @@ export interface PoolDecimals {
   quote: number;
 }
 
-/** u64 BN → decimal string pair. Never BN.toNumber() (spec §5). */
+/** u64 BN → decimal string pair. Never BN.toNumber(). */
 function toAmount(raw: BN, decimals: number): { decimal: number; raw: string } {
   const rawString = raw.toString();
   if (decimals <= 0) return { decimal: Number(rawString), raw: rawString };
@@ -52,7 +52,7 @@ function toAmount(raw: BN, decimals: number): { decimal: number; raw: string } {
  * self-checking: it is the fee the swap actually paid, in the token that was
  * sold. When `amountIn` is zero (or the fee exceeds it — a dust swap) the field
  * is omitted rather than guessed; the observer then falls back to its own
- * configured default (spec §6 lists `fee_bps` as optional).
+ * configured default when `fee_bps` is unavailable.
  */
 function feeBpsPaid(swap: DecodedSwapEvent): number | undefined {
   const amountIn = swap.amountIn;
@@ -89,8 +89,8 @@ export function swapToRow(
   return {
     tx_signature: ctx.signature,
     slot: ctx.slot,
-    // Spec §6: a row must never carry a null block_time. Callers resolve it
-    // before emitting; the row is built only once it is known.
+    // A row must never carry a null block_time. Callers resolve it before
+    // emitting; the row is built only once it is known.
     block_time: ctx.blockTime,
     ts: ctx.ts,
     pool: swap.lbPair.toBase58(),

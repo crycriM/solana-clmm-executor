@@ -1,5 +1,5 @@
 /**
- * Functional test harness (plan §7).
+ * Functional test harness.
  *
  * Drives the same compiled subprocess (`dist/bridge.js`) the keeper uses via
  * its ExecBridge pattern — never an assumed HTTP service. Also carries the
@@ -46,7 +46,7 @@ const SECRET_ENV_RE = /(PRIVATE_KEY|WALLET_SECRET(?!_ARN)|MNEMONIC|SEED|KMS_PLAI
 const STATIC_AWS_CREDENTIAL_RE = /^AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)$/;
 
 /**
- * Hard rule (plan §5/§7): the private key or seed must never be a test
+ * Hard rule: the private key or seed must never be a test
  * environment variable. The subprocess gets only ARN references.
  */
 export function assertNoSecretEnvs(env: NodeJS.ProcessEnv): void {
@@ -64,6 +64,7 @@ const WRITE_GATEWAY_KEYS = [
   'MAX_SOL_PER_TX', 'MAX_SOL_PER_RUN', 'MAX_SLIPPAGE_BPS', 'MAX_PRIORITY_FEE_LAMPORTS',
   'MAX_ACTIVE_BIN_SLIPPAGE_BINS',
   'JITO_ENABLED', 'JITO_BLOCK_ENGINE_URL', 'JITO_TIP_LAMPORTS',
+  'JITO_TIP_ACCOUNT', 'JITO_TIP_ACCOUNTS',
 ] as const;
 
 /**
@@ -110,7 +111,7 @@ export interface LiveWriteGuard {
  * Write campaigns need three independent switches: RUN_LIVE=1 to collect the
  * suite, DRY_RUN=false in the subprocess env, and LIVE_WRITE_CONFIRM=yes plus
  * a LIVE_RUN_ID so an ordinary production configuration can never activate a
- * test campaign by accident (plan §7).
+ * test campaign by accident.
  */
 export function requireLiveWriteConfig(): LiveWriteGuard {
   if (!LIVE_COLLECTION_ENABLED) throw new Error('live suite collected without RUN_LIVE=1');
@@ -404,7 +405,10 @@ export class RunRecorder {
   }
 
   beforeAfter(key: string, before: unknown, after: unknown): void {
-    this.artifact.before_after[key] = { before, after };
+    const current = this.artifact.before_after[key] ?? { before: null, after: null };
+    if (before !== null && before !== undefined) current.before = before;
+    if (after !== null && after !== undefined) current.after = after;
+    this.artifact.before_after[key] = current;
   }
 
   cleanupOperation(operation: string): void {

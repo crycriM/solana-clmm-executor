@@ -1,10 +1,9 @@
 /**
- * Append-only JSONL sink (spec §6): one `fs.writeSync` per row.
+ * Append-only JSONL sink: one `fs.writeSync` per row.
  *
- * Spec §6 forbids buffered batch writes — a buffered line that dies with the
- * process is a lost fill, and the keeper's `verify_log.py` fails closed on any
- * gap it cannot attribute. `writeSync` on an append-mode fd is a single syscall
- * per row, so a row is on disk (visible to a reader) before `append()` returns.
+ * Buffered batch writes are unsafe because a buffered line can be lost when
+ * the process dies. `writeSync` on an append-mode fd is a single syscall per
+ * row, so a row is on disk (visible to a reader) before `append()` returns.
  *
  * The consumer is `dlmm_bot.swap_observer.JsonlSwapEventSource`, which tracks a
  * byte offset and re-reads from zero if the file shrinks. A crash-shortened tail

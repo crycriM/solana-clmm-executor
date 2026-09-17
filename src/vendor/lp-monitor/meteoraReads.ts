@@ -1,15 +1,9 @@
-// vendored from LP-hedging-strategy/lp-monitor/src/dexes/meteoraDlmmAdapter.ts @ git aacfe017291681164a1a23b756f4516768699ad0
-// co-maintained; strip = saveMeteoraPositionsToCsv, updatePositionTracking,
-// fetchDeposits, the file-based logToFile, and the csv-writer import removed
-// (opms-spec §5 "must not copy": CSV persistence and BN.toNumber() on u64).
-// Delta: BN → decimal scaling keeps the raw BN.toString() beside every
-// decimal (spec §3.2). Do not edit in place without noting the delta here.
-// Delta (M0 review): restore the read-only fetch/map function. Use mint
-// decimals from SDK reserves; retain actual bin IDs (upstream put prices in
-// lowerBinId/upperBinId). SDK proportional amounts are floored to raw units;
-// exact fee BNs remain unchanged. USD enrichment stays with the M2 caller.
-// Delta (M2): do not sleep after the final failed attempt; there is no next
-// request to back off before and doing so delays normalized RPC errors.
+// Read-only Meteora adapter. File persistence and CSV output are intentionally
+// omitted. Raw BN values remain available beside decimal-scaled values, and
+// mint decimals come from SDK reserves. Actual bin IDs are preserved; SDK
+// proportional amounts are floored to raw units while exact fee BNs remain
+// unchanged. USD enrichment is handled by the caller. Retries do not sleep
+// after the final failed attempt because no further request follows.
 
 import BN from 'bn.js';
 import { createRequire } from 'node:module';
@@ -22,7 +16,7 @@ const Decimal = DecimalDefault as unknown as typeof DecimalDefault.default;
 export class RetryExhausted extends Error {}
 
 /**
- * Exponential-free retry with linear backoff, from the upstream adapter.
+ * Exponential-free retry with linear backoff.
  * Retrial across RPC endpoints happens in meteora.ts (which emits
  * rpc_failover); this version is the transport-agnostic core.
  */
@@ -50,8 +44,8 @@ export async function withRetry<T>(
 }
 
 /**
- * Raw BN u64 → decimal Number, guarded against the upstream BN.toNumber()
- * hazard (spec §5 "must not be copied"). Decimal =
+ * Raw BN u64 → decimal Number, guarded against the BN.toNumber() hazard.
+ * Decimal =
  * Decimal(bn.toString()) / 10**decimals — exact, no float scaling of an
  * already-lossy Number.
  */

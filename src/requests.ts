@@ -69,6 +69,9 @@ export function parseRequest(value: unknown, mintAllowlist: readonly string[]): 
     case 'withdraw':
       valid = text(value.position_id) && Number.isSafeInteger(value.bps);
       break;
+    case 'quote_swap':
+      valid = swap(value, mintAllowlist);
+      break;
     case 'swap':
       valid = swap(value, mintAllowlist) && (value.pool === null || text(value.pool));
       break;
@@ -76,7 +79,10 @@ export function parseRequest(value: unknown, mintAllowlist: readonly string[]): 
       const deposit = value.deposit_spec;
       valid =
         text(value.withdraw_position_id) &&
-        (value.swap_spec === null || swap(value.swap_spec, mintAllowlist, true)) &&
+        (value.swap_spec === null ||
+          (object(value.swap_spec) &&
+            swap(value.swap_spec, mintAllowlist, true) &&
+            (value.swap_spec.pool === undefined || text(value.swap_spec.pool)))) &&
         object(deposit) &&
         text(deposit.pool) &&
         binId(deposit.expected_active_bin) &&
@@ -100,6 +106,8 @@ export function dispatch(handlers: ExecHandlers, request: ExecRequest): Promise<
       return handlers.get_state(request);
     case 'get_position':
       return handlers.get_position(request);
+    case 'quote_swap':
+      return handlers.quote_swap(request);
     case 'deposit_single_sided':
       return handlers.deposit_single_sided(request);
     case 'withdraw':

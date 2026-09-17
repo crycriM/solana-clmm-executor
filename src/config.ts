@@ -1,5 +1,5 @@
 /**
- * Env parsing + startup validation for spec §9 (project_docs/opms-spec.md).
+ * Environment parsing and startup validation.
  *
  * Fail closed: refuse to start when signer, RPC, or either allow-list is
  * missing. M1–M3 run with DRY_RUN=true; a dummy signer shape is permitted
@@ -11,6 +11,26 @@ import { PublicKey } from '@solana/web3.js';
 import { DEFAULT_RPC_MAX_CU_PER_SECOND } from './rpcRateLimit.js';
 
 export type SignerKind = 'kms' | 'keypair' | 'file';
+
+/** Jupiter v6 aggregator router (mainnet-beta); the swap-instructions API signs against it. */
+export const DEFAULT_JUPITER_PROGRAM_ID = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
+export const DEFAULT_JUPITER_BASE_URL = 'https://lite-api.jup.ag/swap/v1';
+
+/**
+ * Canonical Jito mainnet-beta tip accounts (docs.jito.wtf). A configured tip
+ * account must appear in this list unless the operator replaces the list for
+ * another cluster — the executor never tips an address it was not told to.
+ */
+export const DEFAULT_JITO_TIP_ACCOUNTS = [
+  '96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5',
+  'HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe',
+  'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
+  'ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49',
+  'DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh',
+  'ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt',
+  'DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL',
+  '3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT',
+];
 
 export interface ExecutorConfig {
   rpcReadUrl: string;
@@ -42,6 +62,14 @@ export interface ExecutorConfig {
   jitoEnabled: boolean;
   jitoBlockEngineUrl: string | null;
   jitoTipLamports: number;
+  /** Tip recipient pinned inside JITO_TIP_ACCOUNTS when Jito is enabled. */
+  jitoTipAccount: string | null;
+  /** Allow-listed Jito tip accounts for the connected cluster. */
+  jitoTipAccounts: string[];
+  /** Jupiter Swap API base used by the M5 `pool:null` route (T5.1 decision: raw HTTP). */
+  jupiterBaseUrl: string;
+  /** Top-level program IDs a Jupiter-built swap transaction may call. */
+  jupiterProgramIds: string[];
   swapStreamPath: string;
   executorLogDir: string;
   dryRun: boolean;
@@ -145,6 +173,14 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
     jitoEnabled: boolean(env, 'JITO_ENABLED'),
     jitoBlockEngineUrl: optional(env, 'JITO_BLOCK_ENGINE_URL') || null,
     jitoTipLamports: env['JITO_TIP_LAMPORTS'] ? int(env, 'JITO_TIP_LAMPORTS') : 0,
+    jitoTipAccount: optional(env, 'JITO_TIP_ACCOUNT') || null,
+    jitoTipAccounts: env['JITO_TIP_ACCOUNTS']
+      ? [...new Set(splitList(env['JITO_TIP_ACCOUNTS']))].sort()
+      : [...DEFAULT_JITO_TIP_ACCOUNTS].sort(),
+    jupiterBaseUrl: optional(env, 'JUPITER_BASE_URL', DEFAULT_JUPITER_BASE_URL),
+    jupiterProgramIds: env['JUPITER_PROGRAM_ALLOWLIST']
+      ? [...new Set(splitList(env['JUPITER_PROGRAM_ALLOWLIST']))].sort()
+      : [DEFAULT_JUPITER_PROGRAM_ID],
     swapStreamPath: required(env, 'SWAP_STREAM_PATH'),
     executorLogDir: optional(env, 'EXECUTOR_LOG_DIR', 'logs'),
     dryRun: boolean(env, 'DRY_RUN'),
@@ -160,7 +196,7 @@ function splitList(raw: string): string[] {
 
 /**
  * Parse + validate the full config. Throws ConfigValidationError with the
- * missing key names when anything required is absent (fail closed, spec §9).
+ * missing key names when anything required is absent (fail closed).
  */
 export function loadConfig(env: Record<string, string | undefined> = process.env): ExecutorConfig {
   const config = poolDefaults(env);
@@ -172,6 +208,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new ConfigValidationError('SOLANA_RPC_MAX_CU_PER_SECOND must be greater than zero');
   }
   if (config.jitoBlockEngineUrl) httpUrl(config.jitoBlockEngineUrl, 'JITO_BLOCK_ENGINE_URL');
+  httpUrl(config.jupiterBaseUrl, 'JUPITER_BASE_URL');
+  if (config.jupiterProgramIds.length === 0) {
+    throw new ConfigValidationError('JUPITER_PROGRAM_ALLOWLIST must not be empty');
+  }
+  for (const program of config.jupiterProgramIds) {
+    try {
+      new PublicKey(program);
+    } catch {
+      throw new ConfigValidationError('JUPITER_PROGRAM_ALLOWLIST must contain Solana public keys');
+    }
+  }
   if (config.commitment !== 'confirmed' && config.commitment !== 'finalized') {
     throw new ConfigValidationError('SOLANA_COMMITMENT must be confirmed|finalized');
   }
@@ -227,6 +274,35 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (config.jitoEnabled && !config.jitoBlockEngineUrl) {
     throw new ConfigValidationError('JITO_ENABLED=true requires JITO_BLOCK_ENGINE_URL');
   }
+  if (!config.jitoTipAccounts.length) {
+    throw new ConfigValidationError('JITO_TIP_ACCOUNTS must not be empty');
+  }
+  for (const tip of config.jitoTipAccounts) {
+    try {
+      new PublicKey(tip);
+    } catch {
+      throw new ConfigValidationError('JITO_TIP_ACCOUNTS must contain Solana public keys');
+    }
+  }
+  if (config.jitoEnabled) {
+    if (!config.jitoTipAccount) {
+      throw new ConfigValidationError('JITO_ENABLED=true requires JITO_TIP_ACCOUNT');
+    }
+    try {
+      new PublicKey(config.jitoTipAccount);
+    } catch {
+      throw new ConfigValidationError('JITO_TIP_ACCOUNT must be a Solana public key');
+    }
+    if (!config.jitoTipAccounts.includes(config.jitoTipAccount)) {
+      throw new ConfigValidationError('JITO_TIP_ACCOUNT must be inside JITO_TIP_ACCOUNTS');
+    }
+    if (config.jitoTipLamports <= 0) {
+      throw new ConfigValidationError('JITO_TIP_LAMPORTS must be positive when Jito is enabled');
+    }
+    if (config.jitoTipLamports > config.maxPriorityFeeLamports) {
+      throw new ConfigValidationError('JITO_TIP_LAMPORTS must fit MAX_PRIORITY_FEE_LAMPORTS');
+    }
+  }
 
   return config;
 }
@@ -255,6 +331,10 @@ function policyRelevant(config: ExecutorConfig): string {
     jitoEnabled: config.jitoEnabled,
     jitoBlockEngineUrl: config.jitoBlockEngineUrl,
     jitoTipLamports: config.jitoTipLamports,
+    jitoTipAccount: config.jitoTipAccount,
+    jitoTipAccounts: [...config.jitoTipAccounts].sort(),
+    jupiterBaseUrl: config.jupiterBaseUrl,
+    jupiterProgramIds: [...config.jupiterProgramIds].sort(),
     dryRun: config.dryRun,
   });
 }
@@ -264,7 +344,7 @@ function hashArn(arn: string): string {
   return createHash('sha256').update(arn).digest('hex').slice(0, 16);
 }
 
-/** SHA-256 of the normalized policy-relevant config (spec §7, §9). */
+/** SHA-256 of the normalized policy-relevant configuration. */
 export function policyHash(config: ExecutorConfig): string {
   return createHash('sha256').update(policyRelevant(config)).digest('hex');
 }

@@ -5,7 +5,7 @@ import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-
 import { PublicKey, type AccountInfo, type ParsedAccountData } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { createReadHandlers } from './handlers.js';
-import { MeteoraReads, type PoolReader, type ReadConnection } from './meteora.js';
+import { InvalidPoolError, MeteoraReads, type PoolReader, type ReadConnection } from './meteora.js';
 import { loadConfig } from './config.js';
 import { baseEnv, TEST_BASE_MINT, TEST_POOL } from './testing.js';
 import type { ExecutorLine } from './log.js';
@@ -288,7 +288,7 @@ describe('M2 get_state recorded RPC mapping', () => {
 
   it('normalizes a non-allow-listed pool and exhausted RPC reads', async () => {
     const good = harness();
-    const goodHandlers = createReadHandlers(good.reads);
+    const goodHandlers = createReadHandlers(good.reads, loadConfig(baseEnv()));
     const rejected = await goodHandlers.get_state({
       method: 'get_state',
       pool: TEST_BASE_MINT,
@@ -297,7 +297,7 @@ describe('M2 get_state recorded RPC mapping', () => {
 
     const failedConnection = new FakeConnection();
     failedConnection.fail = true;
-    const failedHandlers = createReadHandlers(harness([failedConnection]).reads);
+    const failedHandlers = createReadHandlers(harness([failedConnection]).reads, loadConfig(baseEnv()));
     const failed = await failedHandlers.get_state({ method: 'get_state', pool: TEST_POOL });
     expect(failed.error).toBe('rpc_timeout');
   });
@@ -317,12 +317,47 @@ describe('M2 get_position recorded SDK mapping', () => {
   it.each(['missing account', 'wrong owner'])('normalizes %s to unknown_position', async (kind) => {
     const connection = new FakeConnection();
     connection.account = kind === 'missing account' ? null : positionAccount(poolAddress);
-    const handlers = createReadHandlers(harness([connection]).reads);
+    const handlers = createReadHandlers(harness([connection]).reads, loadConfig(baseEnv()));
     const response = await handlers.get_position({
       method: 'get_position',
       position_id: position.position_id,
     });
     expect(response.ok).toBe(false);
     expect(response.error).toBe('unknown_position');
+  });
+});
+
+describe('M5 getMintState', () => {
+  function mintAccount(decimals: number): AccountInfo<Buffer> {
+    const data = Buffer.alloc(67);
+    data.writeUInt32LE(1, 0); // mint authority present
+    data.writeBigUInt64LE(1_000_000n, 36); // supply
+    data[44] = decimals;
+    return {
+      data, executable: false, lamports: 1, owner: TOKEN_PROGRAM_ID, rentEpoch: 0,
+    };
+  }
+
+  it('reads decimals, the owning token program, and the wallet balance', async () => {
+    const connection = new FakeConnection();
+    connection.account = mintAccount(state.token_x.decimals);
+    const h = harness([connection]);
+    const mint = await h.reads.getMintState(TEST_BASE_MINT);
+    expect(mint).toEqual({
+      decimals: state.token_x.decimals,
+      tokenProgram: TOKEN_PROGRAM_ID.toBase58(),
+      walletBalanceRaw: state.token_x.wallet_raw,
+    });
+  });
+
+  it('rejects mints outside the allow-list, non-mint owners, and missing accounts', async () => {
+    const connection = new FakeConnection();
+    const h = harness([connection]);
+    await expect(h.reads.getMintState('11111111111111111111111111111112'))
+      .rejects.toBeInstanceOf(InvalidPoolError);
+    connection.account = positionAccount(); // owned by the DLMM program
+    await expect(h.reads.getMintState(TEST_BASE_MINT)).rejects.toBeInstanceOf(InvalidPoolError);
+    connection.account = null;
+    await expect(h.reads.getMintState(TEST_BASE_MINT)).rejects.toBeInstanceOf(InvalidPoolError);
   });
 });

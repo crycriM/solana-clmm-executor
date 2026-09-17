@@ -1,5 +1,5 @@
 /**
- * Decoded Meteora swap stream (spec §6, plan T3.1–T3.3).
+ * Decoded Meteora swap stream.
  *
  * Subscribes to configured pool logs, decodes DLMM swap events, and appends one JSON
  * line per swap to `SWAP_STREAM_PATH`, where
@@ -11,7 +11,7 @@
  * - `prev_active_bin`/`new_active_bin` come from the decoded event's
  *   `startBinId`/`endBinId`, never from polling `getActiveBin` — a crossing that
  *   enters and reverts inside one poll interval is the entire reason this feed
- *   exists (spec §6).
+ * exists.
  * - `tx_signature` is the real signature, always; nothing is synthesized.
  * - Rows are synchronously flushed before stream processing advances.
  *
@@ -78,6 +78,8 @@ export interface SwapStreamDeps {
   commitment?: Finality;
   /** Pause between retries, injectable so tests stay fast. */
   retryDelayMs?: number;
+  /** Bound graceful unsubscribe/queue drain so subprocess shutdown cannot hang. */
+  shutdownTimeoutMs?: number;
   /** Surface asynchronous callback failures without corrupting stdout. */
   reportError?: (detail: string) => void;
   /** Resolve a slot to a block time; the live path uses getBlockTime. */
@@ -135,6 +137,7 @@ export class SwapStream {
   private readonly now: () => number;
   private readonly commitment: Finality;
   private readonly retryDelayMs: number;
+  private readonly shutdownTimeoutMs: number;
   private readonly reportError: (detail: string) => void;
   private readonly blockTimeOf: (slot: number) => Promise<number | null>;
   private readonly logsOf: (
@@ -158,6 +161,7 @@ export class SwapStream {
   private openedOnce = false;
   private socket: SocketLike | null = null;
   private readonly onSocketOpen = (): void => {
+    if (this.closed) return;
     if (!this.openedOnce) {
       this.openedOnce = true;
       if (this.cursors.size === 0) return;
@@ -177,6 +181,7 @@ export class SwapStream {
     this.now = deps.now ?? (() => Date.now() / 1000);
     this.commitment = deps.commitment ?? 'confirmed';
     this.retryDelayMs = deps.retryDelayMs ?? 1000;
+    this.shutdownTimeoutMs = deps.shutdownTimeoutMs ?? 2_000;
     this.reportError = deps.reportError ?? (() => undefined);
     this.blockTimeOf =
       deps.blockTime ?? ((slot) => this.connection.getBlockTime(slot));
@@ -290,6 +295,7 @@ export class SwapStream {
 
   /** Serialize live callbacks and reconnect replays in their arrival order. */
   private enqueue(work: () => Promise<unknown>): void {
+    if (this.closed) return;
     this.queue = this.queue
       .then(async () => { await work(); })
       .catch((error: unknown) => {
@@ -344,7 +350,7 @@ export class SwapStream {
    * registered; against a dead endpoint that becomes an endless reconnect loop
    * whose timers and socket handles pin the event loop. The process then never
    * exits when stdin closes, and the keeper's `ExecBridge` never sees the
-   * restart it relies on (spec §2).
+   * restart it relies on.
    *
    * So teardown empties the subscription registry, stops the client's own
    * reconnect timer, and drops the socket — in that order. Every step is
@@ -355,13 +361,16 @@ export class SwapStream {
    */
   async stop(): Promise<void> {
     const subscriptions = this.subscriptions.splice(0);
-    for (const subscription of subscriptions) {
+    const removals = Promise.all(subscriptions.map(async (subscription) => {
       try {
         await this.connection.removeOnLogsListener(subscription);
       } catch {
         // A socket that never connected rejects here; teardown continues.
       }
-    }
+    }));
+    // Providers are not trusted to acknowledge unsubscribe. Since close()
+    // already marked the stream closed, callbacks arriving here are ignored.
+    await settleWithin(removals, this.shutdownTimeoutMs);
     offSocketOpen(this.connection, this.onSocketOpen);
     forceDisconnect(this.connection);
   }
@@ -370,14 +379,15 @@ export class SwapStream {
     if (this.closed) return;
     this.closed = true;
     await this.stop();
-    await this.flush();
+    const drained = await settleWithin(this.flush(), this.shutdownTimeoutMs);
+    if (!drained) this.reportError('swap stream shutdown abandoned pending recovery');
     this.writer.close?.();
   }
 
   /**
    * Handle one log notification: decode, resolve block time, append, advance.
    *
-   * `block_time` is resolved before the row is written (spec §6: never null).
+   * `block_time` is resolved before the row is written and is never null.
    * A signature whose time cannot be resolved is held out rather than emitted
    * with a placeholder, and an operational gap is recorded with its bounds.
    */
@@ -386,6 +396,7 @@ export class SwapStream {
     slot: number,
     subscribedPool?: string,
   ): Promise<SwapStreamRow[]> {
+    if (this.closed) return [];
     if (notification.err) return [];
     let logs = notification.logs;
     let eventInstructions: string[] = [];
@@ -411,6 +422,7 @@ export class SwapStream {
           return value;
         }, this.commitment === 'finalized' ? 1 : 6, this.retryDelayMs);
       } catch {
+        if (this.closed) return [];
         this.reportError(`live transaction unavailable for ${notification.signature}`);
         const slotBackfill = await this.recoverSlot(subscribedPool, slot, notification.signature);
         if (slotBackfill !== null) return [];
@@ -542,9 +554,10 @@ export class SwapStream {
    * Append rows and advance the per-pool cursor.
    *
    * Dedupe is by signature, so a backfill that overlaps the live tail is free
-   * (spec §6) — the second copy is dropped here rather than downstream.
+   * — the second copy is dropped here rather than downstream.
    */
   private emit(rows: readonly SwapStreamRow[]): SwapStreamRow[] {
+    if (this.closed) return [];
     const emitted: SwapStreamRow[] = [];
     for (const row of rows) {
       let known = this.seen.get(row.pool);
@@ -581,6 +594,7 @@ export class SwapStream {
     const all: ConfirmedSignatureInfo[] = [];
     let before: string | undefined;
     for (;;) {
+      if (this.closed) break;
       const page = await withRetry(
         () => this.signaturesOf(pool, {
           limit: 1000,
@@ -602,10 +616,9 @@ export class SwapStream {
   /**
    * Replay missed swaps for one pool, oldest first, then resume.
    *
-   * Signatures are fetched newest-first and replayed in slot order (spec §6).
-   * The gap line is emitted whether or not anything was found: a gap with zero
-   * backfilled swaps is exactly what `verify_log.py` §6.4 needs to distinguish
-   * from silent loss.
+   * Signatures are fetched newest-first and replayed in slot order. The gap
+   * line is emitted whether or not anything was found: a gap with zero
+   * backfilled swaps distinguishes an empty recovery from silent loss.
    */
   async recover(pool: string): Promise<{ backfilled: number; gap: ExecutorStreamGapInput }> {
     const cursor = this.cursors.get(pool);
@@ -632,6 +645,10 @@ export class SwapStream {
     let backfilled = 0;
     let newest: StreamCursor | null = null;
     for (const info of ordered) {
+      if (this.closed) {
+        recoveryComplete = false;
+        break;
+      }
       let tx: Awaited<ReturnType<typeof this.logsOf>> = null;
       try {
         tx = await withRetry(async () => {
@@ -683,9 +700,24 @@ export class SwapStream {
   /** Backfill every configured pool; called at startup and after a reconnect. */
   async recoverAll(): Promise<number> {
     let total = 0;
-    for (const pool of this.pools) total += (await this.recover(pool)).backfilled;
+    for (const pool of this.pools) {
+      if (this.closed) break;
+      total += (await this.recover(pool)).backfilled;
+    }
     return total;
   }
+}
+
+/** Resolve false at the deadline while permanently observing late rejection. */
+async function settleWithin(work: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = work.then(() => true, () => true);
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const result = await Promise.race([settled, timeout]);
+  if (timer !== undefined) clearTimeout(timer);
+  return result;
 }
 
 function newPublicKey(value: string): PublicKey {

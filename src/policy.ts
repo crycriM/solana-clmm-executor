@@ -1,5 +1,5 @@
 /**
- * Transaction admission policy (spec §8, test plan §6).
+ * Transaction admission policy.
  *
  * This is intentionally below the verb builders: it sees the compiled
  * transaction that will be signed, rather than trusting a builder's intent.
@@ -46,6 +46,7 @@ import {
   REMOVE_LIQUIDITY_BY_RANGE_2_DISCRIMINATOR,
   decodeRemoveLiquidityByRangePayload,
 } from './dlmmWithdraw.js';
+import { SWAP2_DISCRIMINATOR, decodeSwap2Payload, type Swap2Payload } from './dlmmSwap.js';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -67,6 +68,9 @@ export type PolicyRule =
   | 'active_bin_slippage_cap'
   | 'native_deposit_binding'
   | 'native_withdrawal_binding'
+  | 'jupiter_swap_binding'
+  | 'meteora_swap_binding'
+  | 'jito_tip_binding'
   | 'priority_fee_cap';
 
 export class PolicyRejected extends Error {
@@ -134,6 +138,42 @@ export interface PolicyInput {
     bpsToRemove: number;
     claimAndClose: boolean;
   };
+  /**
+   * Expected Jupiter v6 route instruction; policy decodes the final message
+   * and enforces a closed world for every other top-level instruction.
+   * `sourceTokenAccount`/`destinationTokenAccount` are null when the side is
+   * wrapped SOL, whose account is created and destroyed inside the tx.
+   */
+  jupiterSwap?: {
+    routerProgram: string | PublicKey;
+    sourceTokenAccount: string | PublicKey | null;
+    destinationTokenAccount: string | PublicKey | null;
+    tokenProgram: string | PublicKey;
+    amountInRaw: bigint;
+    minOutRaw: bigint;
+  };
+  /** Expected native Meteora `swap2` fields for the direct pool route (T5.1). */
+  meteoraSwap?: {
+    pool: string | PublicKey;
+    userTokenIn: string | PublicKey;
+    userTokenOut: string | PublicKey;
+    reserveX: string | PublicKey;
+    reserveY: string | PublicKey;
+    tokenXMint: string | PublicKey;
+    tokenYMint: string | PublicKey;
+    tokenXProgram: string | PublicKey;
+    tokenYProgram: string | PublicKey;
+    oracle: string | PublicKey;
+    bitmapExtension: string | PublicKey | null;
+    binArrays: (string | PublicKey)[];
+    amountInRaw: bigint;
+    minOutRaw: bigint;
+  };
+  /**
+   * Jito tip that must ride inside the final bundle mutation (plan T5.3):
+   * exactly one wallet-funded system transfer to an allow-listed tip account.
+   */
+  jitoTip?: { account: string | PublicKey; lamports: number };
   /** Required to expand all writable keys of a v0 message. */
   addressLookupTableAccounts?: AddressLookupTableAccount[];
 }
@@ -177,10 +217,13 @@ interface DecodedInstruction {
 export class TransactionPolicy {
   private spentLamports = 0;
   private readonly programs: Set<string>;
+  private readonly jupiterPrograms: Set<string>;
   private readonly wallet: string;
+  private readonly validatedHashes: string[] = [];
 
   constructor(private readonly config: ExecutorConfig, wallet: PublicKey) {
     this.wallet = wallet.toBase58();
+    this.jupiterPrograms = new Set(config.jupiterProgramIds);
     this.programs = new Set([
       LBCLMM_PROGRAM_IDS['mainnet-beta'],
       SystemProgram.programId.toBase58(),
@@ -195,6 +238,16 @@ export class TransactionPolicy {
   validate(tx: Transaction | VersionedTransaction, input: PolicyInput): PolicyDecision {
     const allowedWritable = keySet(input.writableAccounts);
     allowedWritable.add(this.wallet);
+    // A bound Jito tip is a wallet-funded system transfer to an allow-listed
+    // tip account; its destination is writable by construction. The tip
+    // binding check still verifies the transfer exactly.
+    if (input.jitoTip) {
+      allowedWritable.add(
+        typeof input.jitoTip.account === 'string'
+          ? input.jitoTip.account
+          : input.jitoTip.account.toBase58(),
+      );
+    }
     // Anchor encodes an absent optional account as the instruction program ID;
     // preserve the IDL's writable flag while allowing only known programs.
     for (const program of this.programs) allowedWritable.add(program);
@@ -227,15 +280,18 @@ export class TransactionPolicy {
     }
 
     const message = tx instanceof Transaction
-      ? this.validateLegacy(tx, allowedWritable, input.nativeDeposit, input.nativeWithdrawal)
-      : this.validateVersioned(
-          tx,
-          allowedWritable,
-          input.addressLookupTableAccounts,
-          input.nativeDeposit,
-          input.nativeWithdrawal,
-        );
-    return { messageHash: createHash('sha256').update(message).digest('hex'), solSpendLamports };
+      ? this.validateLegacy(tx, allowedWritable, input)
+      : this.validateVersioned(tx, allowedWritable, input);
+    const messageHash = createHash('sha256').update(message).digest('hex');
+    // Every signing path routes through here, so this is the one place that
+    // sees each validated message; the bridge binds the drained list to req_seq.
+    this.validatedHashes.push(messageHash);
+    return { messageHash, solSpendLamports };
+  }
+
+  /** Message hashes validated since the previous call, in signing order. */
+  takeValidatedMessageHashes(): string[] {
+    return this.validatedHashes.splice(0);
   }
 
   /** Reserve only after successful simulation and just before `Signer.sign`. */
@@ -249,9 +305,11 @@ export class TransactionPolicy {
   private validateLegacy(
     tx: Transaction,
     allowedWritable: Set<string>,
-    nativeDeposit: PolicyInput['nativeDeposit'],
-    nativeWithdrawal: PolicyInput['nativeWithdrawal'],
+    input: PolicyInput,
   ): string {
+    if (input.jupiterSwap) {
+      reject('jupiter_swap_binding', 'Jupiter swap requires a versioned transaction');
+    }
     if (!tx.feePayer?.toBase58 || tx.feePayer.toBase58() !== this.wallet) {
       reject('fee_payer', 'wallet must be fee payer');
     }
@@ -266,22 +324,14 @@ export class TransactionPolicy {
         allowedWritable,
       );
     }
-    this.validateNativeDepositBinding(
-      tx.instructions.map((instruction) => ({
-        program: instruction.programId,
-        accounts: instruction.keys.map((key) => key.pubkey),
-        data: instruction.data,
-      })),
-      nativeDeposit,
-    );
-    this.validateNativeWithdrawalBinding(
-      tx.instructions.map((instruction) => ({
-        program: instruction.programId,
-        accounts: instruction.keys.map((key) => key.pubkey),
-        data: instruction.data,
-      })),
-      nativeWithdrawal,
-    );
+    const legacyInstructions = tx.instructions.map((instruction) => ({
+      program: instruction.programId,
+      accounts: instruction.keys.map((key) => key.pubkey),
+      data: instruction.data,
+    }));
+    this.validateNativeDepositBinding(legacyInstructions, input.nativeDeposit, input.jitoTip);
+    this.validateNativeWithdrawalBinding(legacyInstructions, input.nativeWithdrawal);
+    this.validateMeteoraSwapBinding(legacyInstructions, input.meteoraSwap);
     const message = tx.compileMessage();
     const signerKeys = message.accountKeys.slice(0, message.header.numRequiredSignatures);
     this.validateSigners(signerKeys);
@@ -292,10 +342,9 @@ export class TransactionPolicy {
   private validateVersioned(
     tx: VersionedTransaction,
     allowedWritable: Set<string>,
-    lookupTables: AddressLookupTableAccount[] | undefined,
-    nativeDeposit: PolicyInput['nativeDeposit'],
-    nativeWithdrawal: PolicyInput['nativeWithdrawal'],
+    input: PolicyInput,
   ): string {
+    const { addressLookupTableAccounts: lookupTables } = input;
     const message = tx.message;
     if (message.addressTableLookups.length > 0 && !lookupTables) {
       reject('address_lookup_tables', 'versioned transaction has unresolved lookup tables');
@@ -308,9 +357,7 @@ export class TransactionPolicy {
     }
     const signerKeys = keys.staticAccountKeys.slice(0, message.header.numRequiredSignatures);
     this.validateSigners(signerKeys);
-    const computeBudget: ComputeBudgetInstructionData[] = [];
-    const decodedInstructions: DecodedInstruction[] = [];
-    for (const instruction of message.compiledInstructions) {
+    const decoded = message.compiledInstructions.map((instruction) => {
       const program = keys.get(instruction.programIdIndex);
       if (!program) reject('program_id_allowlist', 'instruction program is unresolved');
       const accountKeys = instruction.accountKeyIndexes.map((index) => {
@@ -322,18 +369,154 @@ export class TransactionPolicy {
           isWritable: message.isAccountWritable(index),
         };
       });
-      this.validateInstruction(program, accountKeys, Buffer.from(instruction.data), allowedWritable);
-      decodedInstructions.push({
+      return {
         program,
         accounts: accountKeys.map((account) => account.key),
         data: Buffer.from(instruction.data),
-      });
-      computeBudget.push({ program, data: Buffer.from(instruction.data) });
+        accountKeys,
+      };
+    });
+    if (input.jupiterSwap) {
+      const ephemeral = this.validateJupiterSwapBinding(decoded, input.jupiterSwap);
+      for (const account of ephemeral) allowedWritable.add(account);
     }
-    this.validateNativeDepositBinding(decodedInstructions, nativeDeposit);
-    this.validateNativeWithdrawalBinding(decodedInstructions, nativeWithdrawal);
+    const computeBudget: ComputeBudgetInstructionData[] = [];
+    const decodedInstructions: DecodedInstruction[] = [];
+    for (const instruction of decoded) {
+      if (input.jupiterSwap && this.jupiterPrograms.has(instruction.program.toBase58())) {
+        // The router's own account vector is Jupiter's domain (route pools are
+        // writable there); only the bound prefix and signer rule apply.
+        for (const account of instruction.accountKeys) {
+          if (account.isSigner && account.key.toBase58() !== this.wallet) {
+            reject('only_wallet_signer', 'a non-wallet account was marked signer');
+          }
+        }
+      } else {
+        this.validateInstruction(
+          instruction.program,
+          instruction.accountKeys,
+          instruction.data,
+          allowedWritable,
+        );
+      }
+      decodedInstructions.push({
+        program: instruction.program,
+        accounts: instruction.accounts,
+        data: instruction.data,
+      });
+      computeBudget.push({ program: instruction.program, data: instruction.data });
+    }
+    this.validateNativeDepositBinding(decodedInstructions, input.nativeDeposit, input.jitoTip);
+    this.validateNativeWithdrawalBinding(decodedInstructions, input.nativeWithdrawal);
+    this.validateMeteoraSwapBinding(decodedInstructions, input.meteoraSwap);
     this.validatePriorityFee(computeBudget);
     return Buffer.from(message.serialize()).toString('hex');
+  }
+
+  /**
+   * Enforce the Jupiter swap closed world: exactly one router instruction with
+   * the bound amount, minimum output, and wallet accounts; every other
+   * top-level instruction must be a standard-program setup/teardown step that
+   * can only touch the wallet, the bound token accounts, or accounts created
+   * inside this same transaction. Returns the transaction-local ephemeral
+   * accounts (wSOL wrap/unwrap) so callers can widen the writable allow-list.
+   * ##### NOT USED #####
+   */
+  private validateJupiterSwapBinding(
+    decoded: {
+      program: PublicKey;
+      accounts: PublicKey[];
+      data: Buffer;
+      accountKeys: { key: PublicKey; isWritable: boolean }[];
+    }[],
+    expected: NonNullable<PolicyInput['jupiterSwap']>,
+  ): Set<string> {
+    const rejectSwap = (detail: string): never =>
+      reject('jupiter_swap_binding', detail);
+    const asKey = (value: string | PublicKey): string =>
+      typeof value === 'string' ? value : value.toBase58();
+    const router = decoded.filter((ix) => this.jupiterPrograms.has(ix.program.toBase58()));
+    if (router.length !== 1) rejectSwap('expected exactly one Jupiter router instruction');
+    const route = router[0]!;
+    if (route.program.toBase58() !== asKey(expected.routerProgram)) {
+      rejectSwap('router program does not match the configured Jupiter program');
+    }
+    // v6 route layout: [0] route type, [1..9] amount u64 LE, [9..17] min-out u64 LE.
+    if (route.data.length < 17 || ![0, 1, 2].includes(route.data[0]!)) {
+      rejectSwap('router instruction payload is malformed');
+    }
+    if (route.data.readBigUInt64LE(1) !== expected.amountInRaw) {
+      rejectSwap('router amount-in does not match the requested swap');
+    }
+    if (route.data.readBigUInt64LE(9) !== expected.minOutRaw) {
+      rejectSwap('router minimum output does not match the quoted slippage bound');
+    }
+    if (route.accounts.length < 4) rejectSwap('router instruction accounts are truncated');
+    const tokenProgram = new PublicKey(asKey(expected.tokenProgram));
+    if (!route.accounts[0]!.equals(tokenProgram) ||
+        (!tokenProgram.equals(TOKEN_PROGRAM_ID) && !tokenProgram.equals(TOKEN_2022_PROGRAM_ID)) ||
+        route.accounts[1]!.toBase58() !== this.wallet) {
+      rejectSwap('router fixed accounts do not match the validated request');
+    }
+    if (expected.sourceTokenAccount &&
+        route.accounts[2]!.toBase58() !== asKey(expected.sourceTokenAccount)) {
+      rejectSwap('router source token account is not the wallet account for the input mint');
+    }
+    if (expected.destinationTokenAccount &&
+        route.accounts[3]!.toBase58() !== asKey(expected.destinationTokenAccount)) {
+      rejectSwap('router destination token account is not the wallet account for the output mint');
+    }
+
+    const ephemeral = new Set<string>();
+    for (const ix of decoded) {
+      if (ix.program.equals(SystemProgram.programId)) {
+        if (ix.data.length < 4) rejectSwap('system instruction payload is malformed');
+        const type = ix.data.readUInt32LE(0);
+        if (type === 0 && ix.accounts.length >= 2) {
+          ephemeral.add(ix.accounts[1]!.toBase58());
+        } else if (type === 2 && ix.accounts.length >= 2) {
+          if (!this.ephemeralOrBound(ix.accounts[1]!.toBase58(), ephemeral, expected)) {
+            rejectSwap('system transfer may only fund a transaction-local account');
+          }
+        } else {
+          rejectSwap('unsupported system instruction in a Jupiter swap');
+        }
+        continue;
+      }
+      if (ix.program.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
+        if (ix.data.length !== 1 || ix.data[0] !== 1 || ix.accounts.length < 6 ||
+            ix.accounts[0]!.toBase58() !== this.wallet ||
+            ix.accounts[2]!.toBase58() !== this.wallet) {
+          rejectSwap('associated-token instruction must be an idempotent wallet creation');
+        }
+        continue;
+      }
+      if (ix.program.equals(TOKEN_PROGRAM_ID) || ix.program.equals(TOKEN_2022_PROGRAM_ID)) {
+        // Wrap/sync/close steps may only mutate the bound wallet accounts or
+        // accounts created inside this transaction.
+        for (const account of ix.accountKeys) {
+          if (account.isWritable &&
+              !this.ephemeralOrBound(account.key.toBase58(), ephemeral, expected)) {
+            rejectSwap('token program instruction touches an unbound account');
+          }
+        }
+      }
+    }
+    return ephemeral;
+  }
+
+  private ephemeralOrBound(
+    key: string,
+    ephemeral: Set<string>,
+    expected: NonNullable<PolicyInput['jupiterSwap']>,
+  ): boolean {
+    if (key === this.wallet || ephemeral.has(key)) return true;
+    const asKey = (value: string | PublicKey): string =>
+      typeof value === 'string' ? value : value.toBase58();
+    return (expected.sourceTokenAccount !== null &&
+        asKey(expected.sourceTokenAccount) === key) ||
+      (expected.destinationTokenAccount !== null &&
+        asKey(expected.destinationTokenAccount) === key);
   }
 
   private validateSigners(keys: PublicKey[]): void {
@@ -377,6 +560,7 @@ export class TransactionPolicy {
   private validateNativeDepositBinding(
     instructions: DecodedInstruction[],
     expected: PolicyInput['nativeDeposit'],
+    jitoTip?: PolicyInput['jitoTip'],
   ): void {
     const meteoraProgram = LBCLMM_PROGRAM_IDS['mainnet-beta'];
     const deposits = instructions.filter((instruction) =>
@@ -388,8 +572,16 @@ export class TransactionPolicy {
       }
       return;
     }
+    const tipTransfers: DecodedInstruction[] = [];
     for (const candidate of instructions) {
       if (candidate.program.equals(ComputeBudgetProgram.programId)) continue;
+      if (candidate.program.equals(SystemProgram.programId)) {
+        if (!jitoTip) {
+          reject('native_deposit_binding', 'unexpected program in deposit transaction');
+        }
+        tipTransfers.push(candidate);
+        continue;
+      }
       if (candidate.program.toBase58() === meteoraProgram) {
         const tag = candidate.data.subarray(0, 8);
         if (!tag.equals(ADD_LIQUIDITY_ONE_SIDE_DISCRIMINATOR) &&
@@ -402,6 +594,9 @@ export class TransactionPolicy {
       }
       if (candidate.program.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) continue;
       reject('native_deposit_binding', 'unexpected program in deposit transaction');
+    }
+    if (jitoTip) {
+      this.validateJitoTip(tipTransfers, jitoTip);
     }
     if (deposits.length !== 1) {
       reject('native_deposit_binding', 'expected exactly one native one-sided deposit');
@@ -720,6 +915,103 @@ export class TransactionPolicy {
           !ata.accounts[4]?.equals(SystemProgram.programId)) {
         rejectWithdrawal('withdrawal ATA instruction is invalid');
       }
+    }
+  }
+
+  /**
+   * Enforce the native Meteora `swap2` binding (plan T5.1 direct route):
+   * exactly one swap with the bound amount-in/minimum-out inside the
+   * mutation instruction, the full IDL account vector matching the pool
+   * metadata and wallet ATAs, and a standard-program closed world around it.
+   */
+  private validateMeteoraSwapBinding(
+    instructions: DecodedInstruction[],
+    expected: PolicyInput['meteoraSwap'],
+  ): void {
+    const meteoraProgram = LBCLMM_PROGRAM_IDS['mainnet-beta'];
+    const asKey = (value: string | PublicKey): string =>
+      typeof value === 'string' ? value : value.toBase58();
+    const isSwap = (ix: DecodedInstruction): boolean =>
+      ix.program.toBase58() === meteoraProgram &&
+      ix.data.subarray(0, 8).equals(SWAP2_DISCRIMINATOR);
+    const swaps = instructions.filter(isSwap);
+    if (!expected) {
+      if (swaps.length > 0) reject('meteora_swap_binding', 'Meteora swap lacks policy binding');
+      return;
+    }
+    const rejectSwap = (detail: string): never => reject('meteora_swap_binding', detail);
+    for (const candidate of instructions) {
+      if (isSwap(candidate) ||
+          candidate.program.equals(ComputeBudgetProgram.programId) ||
+          candidate.program.equals(ASSOCIATED_TOKEN_PROGRAM_ID) ||
+          candidate.program.equals(TOKEN_PROGRAM_ID) ||
+          candidate.program.equals(TOKEN_2022_PROGRAM_ID) ||
+          candidate.program.equals(SystemProgram.programId)) {
+        continue;
+      }
+      rejectSwap('unexpected program in Meteora swap transaction');
+    }
+    if (swaps.length !== 1) rejectSwap('expected exactly one Meteora swap');
+    const swap = swaps[0]!;
+    let payload: Swap2Payload;
+    try {
+      payload = decodeSwap2Payload(swap.data);
+    } catch {
+      reject('meteora_swap_binding', 'swap payload is malformed');
+    }
+    if (payload.slices.some((slice) => slice.length > 0)) {
+      rejectSwap('transfer-hook account slices are unsupported');
+    }
+    if (payload.amountIn !== expected.amountInRaw) {
+      rejectSwap('swap amount-in does not match the requested swap');
+    }
+    if (payload.minAmountOut !== expected.minOutRaw || payload.minAmountOut <= 0n) {
+      rejectSwap('swap minimum output does not match the quoted slippage bound');
+    }
+    const program = swap.program;
+    const [eventAuthority] = deriveEventAuthority(program);
+    const expectedAccounts = [
+      expected.pool, expected.bitmapExtension ?? program,
+      expected.reserveX, expected.reserveY,
+      expected.userTokenIn, expected.userTokenOut,
+      expected.tokenXMint, expected.tokenYMint,
+      expected.oracle, program,
+      this.wallet, expected.tokenXProgram, expected.tokenYProgram,
+      MEMO_PROGRAM_ID, eventAuthority, program,
+      ...expected.binArrays,
+    ].map(asKey);
+    if (swap.accounts.length !== expectedAccounts.length ||
+        expectedAccounts.some((key, index) => swap.accounts[index]?.toBase58() !== key)) {
+      rejectSwap('swap accounts do not match the validated request');
+    }
+  }
+
+  /**
+   * A Jito tip must ride inside the final bundle mutation, be a plain wallet
+   * system transfer to the configured tip account, and fit the priority-fee
+   * budget. A standalone tip transaction is never admitted.
+   */
+  private validateJitoTip(
+    tips: DecodedInstruction[],
+    expected: NonNullable<PolicyInput['jitoTip']>,
+  ): void {
+    const rejectTip = (detail: string): never => reject('jito_tip_binding', detail);
+    if (tips.length !== 1) {
+      rejectTip('expected exactly one tip transfer in the final bundle transaction');
+    }
+    if (!Number.isSafeInteger(expected.lamports) || expected.lamports <= 0 ||
+        expected.lamports > this.config.maxPriorityFeeLamports) {
+      rejectTip('Jito tip exceeds MAX_PRIORITY_FEE_LAMPORTS or is invalid');
+    }
+    const tip = tips[0]!;
+    const asKey = (value: string | PublicKey): string =>
+      typeof value === 'string' ? value : value.toBase58();
+    if (tip.data.length !== 12 || tip.data.readUInt32LE(0) !== 2 ||
+        tip.data.readBigUInt64LE(4) !== BigInt(expected.lamports) ||
+        tip.accounts.length !== 2 ||
+        tip.accounts[0]?.toBase58() !== this.wallet ||
+        tip.accounts[1]?.toBase58() !== asKey(expected.account)) {
+      rejectTip('tip transfer does not match the configured Jito account and budget');
     }
   }
 

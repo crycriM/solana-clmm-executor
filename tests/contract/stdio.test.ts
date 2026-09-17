@@ -1,4 +1,4 @@
-/** Plan §7 contract gate: JSON-lines framing and stdio ordering. */
+/** Contract coverage for JSON-lines framing and stdio ordering. */
 import fs from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ExecRequest, ExecResponse, Verb } from '../../src/protocol.js';

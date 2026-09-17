@@ -1,4 +1,4 @@
-/** Plan §7 contract gate: wire envelopes match the canonical fixtures. */
+/** Contract coverage for wire envelopes and fixtures. */
 import fs from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ExecRequest, ExecResponse, Verb } from '../../src/protocol.js';
@@ -44,7 +44,8 @@ describe.each(verbs)('%s contract envelope', (verb) => {
   it('invalid field values yield the canonical bad_request envelope', async () => {
     const field = {
       get_state: 'pool', get_position: 'position_id', deposit_single_sided: 'pool',
-      withdraw: 'position_id', swap: 'in_mint', refresh_bundle: 'withdraw_position_id',
+      withdraw: 'position_id', quote_swap: 'in_mint', swap: 'in_mint',
+      refresh_bundle: 'withdraw_position_id',
     }[verb];
     const broken = { ...requests[verb] } as Record<string, unknown>;
     delete broken[field];

@@ -27,7 +27,7 @@ describe('append-only JSONL writer', () => {
     const writer = new JsonlWriter(file);
     try {
       for (let i = 0; i < 5; i++) writer.append({ i, tx_signature: `sig${i}` });
-      // No close: the rows must already be on disk (spec §6 flush per line).
+      // No close: the rows must already be on disk after each append.
       expect(readJsonl(file)).toHaveLength(5);
       expect(fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)).toHaveLength(5);
     } finally {

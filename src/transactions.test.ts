@@ -1,10 +1,20 @@
 import { createPrivateKey, sign as signEd25519 } from 'node:crypto';
-import { Keypair, SystemProgram, Transaction } from '@solana/web3.js';
-import { describe, expect, it } from 'vitest';
+import {
+  Keypair,
+  SystemProgram,
+  Transaction,
+  TransactionMessage,
+  VersionedTransaction,
+} from '@solana/web3.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from './config.js';
 import { PolicyRejected, TransactionPolicy } from './policy.js';
 import type { Signer } from './signer.js';
-import { executeLegacyTransaction, type ExecutionConnection } from './transactions.js';
+import {
+  executeLegacyTransaction,
+  executeVersionedTransaction,
+  type ExecutionConnection,
+} from './transactions.js';
 import { baseEnv } from './testing.js';
 
 const BLOCKHASH = '11111111111111111111111111111111';
@@ -61,6 +71,8 @@ function fixture(simulationError: unknown = null) {
 }
 
 describe('executeLegacyTransaction', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it('enforces policy, simulates unsigned, signs once, and returns the chain receipt', async () => {
     const f = fixture();
     const result = await executeLegacyTransaction(f.tx, {
@@ -116,5 +128,104 @@ describe('executeLegacyTransaction', () => {
       policy: { messageHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
     expect(f.calls).toEqual(['blockhash', 'simulate', 'send:throw']);
+  });
+
+  it('retries post-confirmation receipt indexing lag', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let receiptAttempts = 0;
+    f.connection.getTransaction = async () => {
+      f.calls.push('receipt');
+      receiptAttempts += 1;
+      return receiptAttempts < 3
+        ? null
+        : { slot: 42, blockTime: 1_700_000_000, meta: { fee: 5_000 } };
+    };
+    const pending = executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    });
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result.receipt).toMatchObject({ slot: 42, fee_lamports: 5_000 });
+    expect(receiptAttempts).toBe(3);
+    expect(f.calls).toEqual([
+      'blockhash', 'simulate', expect.stringMatching(/^send:true$/), 'confirm',
+      'receipt', 'receipt', 'receipt',
+    ]);
+  });
+});
+
+describe('executeVersionedTransaction', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  function versionedFixture(simulationError: unknown = null, meta: unknown = undefined) {
+    const f = fixture(simulationError);
+    const message = new TransactionMessage({
+      payerKey: f.signer.publicKey,
+      recentBlockhash: '11111111111111111111111111111111',
+      instructions: [SystemProgram.transfer({
+        fromPubkey: f.signer.publicKey, toPubkey: f.recipient, lamports: 1,
+      })],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(message);
+    if (meta !== undefined) {
+      f.connection.getTransaction = async () => {
+        f.calls.push('receipt');
+        return {
+          slot: 42, blockTime: 1_700_000_000,
+          meta: { fee: 5_000, ...(meta as object) },
+        };
+      };
+    }
+    return { ...f, tx };
+  }
+
+  const options = (f: ReturnType<typeof versionedFixture>) => ({
+    connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'confirmed' as const,
+    policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+  });
+
+  it('writes a fresh blockhash into the v0 message and settles with receipt meta', async () => {
+    const f = versionedFixture(null, {
+      preBalances: [10, 0],
+      postBalances: [9, 1],
+      preTokenBalances: [],
+      postTokenBalances: [],
+    });
+    const result = await executeVersionedTransaction(f.tx, options(f));
+    expect(f.calls).toEqual([
+      'blockhash', 'simulate', expect.stringMatching(/^send:true$/), 'confirm', 'receipt',
+    ]);
+    expect(f.tx.message.recentBlockhash.toString()).toBe(BLOCKHASH);
+    expect(result.receipt).toMatchObject({ slot: 42, fee_lamports: 5_000, status: 'confirmed' });
+    expect(result.meta).toMatchObject({ fee: 5_000, preBalances: [10, 0] });
+  });
+
+  it('fails simulation before signing or submitting', async () => {
+    const f = versionedFixture({ InstructionError: [0, 'Custom'] });
+    await expect(executeVersionedTransaction(f.tx, options(f)))
+      .rejects.toMatchObject({ logs: ['program log'] });
+    expect(f.calls).toEqual(['blockhash', 'simulate']);
+    expect(f.signCalls()).toBe(0);
+  });
+
+  it('rejects policy before simulation and never signs', async () => {
+    const f = versionedFixture();
+    await expect(executeVersionedTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy,
+      commitment: 'confirmed', policyInput: { writableAccounts: [], amounts: {} },
+    })).rejects.toBeInstanceOf(PolicyRejected);
+    expect(f.calls).toEqual(['blockhash']);
+    expect(f.signCalls()).toBe(0);
+  });
+
+  it('returns the deterministic signature when submission is ambiguous', async () => {
+    const f = versionedFixture();
+    f.connection.sendRawTransaction = async () => { throw new Error('timeout'); };
+    await expect(executeVersionedTransaction(f.tx, options(f))).rejects.toMatchObject({
+      signature: expect.stringMatching(/^[1-9A-HJ-NP-Za-km-z]{87,88}$/),
+      blockhash: BLOCKHASH,
+    });
   });
 });

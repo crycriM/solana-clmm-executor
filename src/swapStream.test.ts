@@ -241,7 +241,7 @@ describe('swap event → stream row mapping', () => {
     expect(rows[0]!.direction).toBe('down');
   });
 
-  it('keeps a > 2^53 raw amount exact (BN.toNumber regression, spec §5)', () => {
+  it('keeps a > 2^53 raw amount exact (BN.toNumber regression)', () => {
     const huge = '10000000411680503305';
     // swapForY=false: the taker sold base (9 decimals), so the huge raw is
     // scaled by 1e9 and the decimal keeps all 20 significant digits.
@@ -325,6 +325,38 @@ describe('swap event → stream row mapping', () => {
 });
 
 describe('swap stream sink', () => {
+  it('bounds shutdown and drops a callback still waiting on provider indexing', async () => {
+    type FetchedLogs = {
+      slot: number;
+      blockTime: number;
+      logs: string[];
+      eventInstructions: string[];
+    };
+    let release: ((value: FetchedLogs) => void) | undefined;
+    const h = harness({
+      shutdownTimeoutMs: 1,
+      fetchLogs: async () => new Promise<FetchedLogs>((resolve) => { release = resolve; }),
+    });
+    h.stream.start();
+    const notification = h.deps.notify(
+      'slow-provider-index',
+      12,
+      ['Program log: Instruction: Swap2'],
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(release).toBeTypeOf('function');
+
+    await h.stream.close();
+    release!({
+      slot: 12,
+      blockTime: 1756900012,
+      logs: ['Program log: Instruction: Swap2'],
+      eventInstructions: [eventCpiSwap({ startBinId: 2, endBinId: 3 })],
+    });
+    await notification;
+    expect(fs.existsSync(h.file) ? readJsonl(h.file) : []).toEqual([]);
+  });
+
   it('fetches and decodes current event-CPI swap instructions', async () => {
     const h = harness();
     h.deps.logs.set('sig-cpi', {
@@ -464,7 +496,7 @@ describe('swap stream sink', () => {
     await h.stream.close();
   });
 
-  it('never emits a row with a missing block time (spec §6)', async () => {
+  it('never emits a row with a missing block time', async () => {
     let attempts = 0;
     const h = harness({ blockTime: async () => { attempts += 1; return null; } });
     const rows = await emit(h, 'sig-no-time', 1, swapLogs({ startBinId: 1, endBinId: 2 }));
@@ -536,7 +568,7 @@ describe('swap stream sink', () => {
   });
 });
 
-describe('gap handling and backfill (spec §6)', () => {
+describe('gap handling and backfill', () => {
   it('replays missed swaps in slot order and records the gap bounds', async () => {
     const h = harness();
     h.stream.start();

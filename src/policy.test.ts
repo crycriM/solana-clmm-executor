@@ -11,12 +11,14 @@ import {
 import { describe, expect, it } from 'vitest';
 import {
   createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import { loadConfig } from './config.js';
 import { PolicyRejected, TransactionPolicy } from './policy.js';
 import { buildAddLiquidityOneSideInstruction } from './dlmmWeighted.js';
 import { deriveWeightedDepositAddresses } from './dlmmAccounts.js';
-import { baseEnv, TEST_BASE_MINT, TEST_POOL } from './testing.js';
+import { baseEnv, TEST_BASE_MINT, TEST_POOL, TEST_QUOTE_MINT } from './testing.js';
 
 const BLOCKHASH = '11111111111111111111111111111111';
 
@@ -230,3 +232,187 @@ describe('TransactionPolicy', () => {
 // driven by config rather than accepting arbitrary public keys.
 void TEST_BASE_MINT;
 void TEST_POOL;
+
+function systemCreate(from: PublicKey, target: PublicKey, lamports: number): TransactionInstruction {
+  const data = Buffer.alloc(52);
+  data.writeUInt32LE(0, 0);
+  data.writeBigUInt64LE(BigInt(lamports), 4);
+  data.writeBigUInt64LE(165n, 12);
+  new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA').toBuffer().copy(data, 20);
+  return new TransactionInstruction({
+    programId: SystemProgram.programId,
+    keys: [
+      { pubkey: from, isSigner: true, isWritable: true },
+      { pubkey: target, isSigner: false, isWritable: true },
+    ],
+    data,
+  });
+}
+
+function jupiterFixture() {
+  const wallet = Keypair.generate();
+  const router = Keypair.generate();
+  const config = loadConfig(baseEnv({
+    WALLET_PUBKEY: wallet.publicKey.toBase58(),
+    JUPITER_PROGRAM_ALLOWLIST: router.publicKey.toBase58(),
+  }));
+  const policy = new TransactionPolicy(config, wallet.publicKey);
+  const inMint = new PublicKey(TEST_QUOTE_MINT);
+  const outMint = new PublicKey(TEST_BASE_MINT);
+  const source = getAssociatedTokenAddressSync(inMint, wallet.publicKey);
+  const destination = getAssociatedTokenAddressSync(outMint, wallet.publicKey);
+  const poolAccount = Keypair.generate().publicKey;
+  const amountIn = 1_000_000n;
+  const minOut = 990_000n;
+  const routerData = Buffer.alloc(17);
+  routerData[0] = 2;
+  routerData.writeBigUInt64LE(amountIn, 1);
+  routerData.writeBigUInt64LE(minOut, 9);
+  const routerInstruction = (
+    authority: PublicKey = wallet.publicKey,
+    authoritySigns = true,
+  ) => new TransactionInstruction({
+    programId: router.publicKey,
+    keys: [
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: authority, isSigner: authoritySigns, isWritable: true },
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: poolAccount, isSigner: false, isWritable: true },
+    ],
+    data: routerData,
+  });
+  const build = (instructions: TransactionInstruction[]) => new VersionedTransaction(
+    new TransactionMessage({
+      payerKey: wallet.publicKey, recentBlockhash: BLOCKHASH, instructions,
+    }).compileToV0Message(),
+  );
+  const baseInput = {
+    writableAccounts: [source, destination],
+    mints: [inMint, outMint],
+    amounts: { maxSlippageBps: 50, solSpendLamports: 5_000 },
+    jupiterSwap: {
+      routerProgram: router.publicKey,
+      sourceTokenAccount: source,
+      destinationTokenAccount: destination,
+      tokenProgram: TOKEN_PROGRAM_ID,
+      amountInRaw: amountIn,
+      minOutRaw: minOut,
+    },
+    addressLookupTableAccounts: [],
+  };
+  return {
+    wallet, router, policy, source, destination, routerInstruction,
+    routerData, build, baseInput, amountIn, minOut,
+  };
+}
+
+describe('TransactionPolicy Jupiter swap binding', () => {
+  it('accepts a router instruction bound to the wallet, amounts, and ATAs', () => {
+    const f = jupiterFixture();
+    const decision = f.policy.validate(f.build([f.routerInstruction()]), f.baseInput);
+    expect(decision.messageHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('accepts idempotent ATA setup and transaction-local wrap/transfer steps', () => {
+    const f = jupiterFixture();
+    const ephemeral = Keypair.generate().publicKey;
+    const transfer = new TransactionInstruction({
+      programId: SystemProgram.programId,
+      keys: [
+        { pubkey: f.wallet.publicKey, isSigner: true, isWritable: true },
+        { pubkey: ephemeral, isSigner: false, isWritable: true },
+      ],
+      data: (() => {
+        const data = Buffer.alloc(12);
+        data.writeUInt32LE(2, 0);
+        data.writeBigUInt64LE(100_000n, 4);
+        return data;
+      })(),
+    });
+    expect(() => f.policy.validate(f.build([
+      systemCreate(f.wallet.publicKey, ephemeral, 2_000_000),
+      transfer,
+      createAssociatedTokenAccountIdempotentInstruction(
+        f.wallet.publicKey, f.destination, f.wallet.publicKey, new PublicKey(TEST_BASE_MINT),
+      ),
+      f.routerInstruction(),
+    ]), f.baseInput)).not.toThrow();
+  });
+
+  it('rejects a router payload that changes the amount or the minimum output', () => {
+    const f = jupiterFixture();
+    const tampered = Buffer.from(f.routerData);
+    tampered.writeBigUInt64LE(f.amountIn + 1n, 1);
+    const tamperedOut = Buffer.from(f.routerData);
+    tamperedOut.writeBigUInt64LE(f.minOut - 10_000n, 9);
+    const swapWith = (data: Buffer) => new TransactionInstruction({
+      programId: f.routerInstruction().programId,
+      keys: f.routerInstruction().keys,
+      data,
+    });
+    rejectRule(() => f.policy.validate(f.build([swapWith(tampered)]), f.baseInput),
+      'jupiter_swap_binding');
+    rejectRule(() => f.policy.validate(f.build([swapWith(tamperedOut)]), f.baseInput),
+      'jupiter_swap_binding');
+  });
+
+  it('rejects a foreign transfer authority or a second router instruction', () => {
+    const f = jupiterFixture();
+    // A foreign key marked signer is promoted into the message header and
+    // fails the sole-signer rule before the binding is even consulted.
+    rejectRule(() => f.policy.validate(
+      f.build([f.routerInstruction(Keypair.generate().publicKey)]), f.baseInput,
+    ), 'only_wallet_signer');
+    rejectRule(() => f.policy.validate(
+      f.build([f.routerInstruction(Keypair.generate().publicKey, false)]), f.baseInput,
+    ), 'jupiter_swap_binding');
+    rejectRule(() => f.policy.validate(
+      f.build([f.routerInstruction(), f.routerInstruction()]), f.baseInput,
+    ), 'jupiter_swap_binding');
+  });
+
+  it('rejects wallet SOL leaving toward an account not created in the transaction', () => {
+    const f = jupiterFixture();
+    const stranger = Keypair.generate().publicKey;
+    const transfer = new TransactionInstruction({
+      programId: SystemProgram.programId,
+      keys: [
+        { pubkey: f.wallet.publicKey, isSigner: true, isWritable: true },
+        { pubkey: stranger, isSigner: false, isWritable: true },
+      ],
+      data: (() => {
+        const data = Buffer.alloc(12);
+        data.writeUInt32LE(2, 0);
+        data.writeBigUInt64LE(1_000_000n, 4);
+        return data;
+      })(),
+    });
+    rejectRule(() => f.policy.validate(f.build([transfer, f.routerInstruction()]), f.baseInput),
+      'jupiter_swap_binding');
+  });
+
+  it('rejects a token program step that touches an unbound wallet account', () => {
+    const f = jupiterFixture();
+    const foreignAta = Keypair.generate().publicKey;
+    const transferChecked = new TransactionInstruction({
+      programId: TOKEN_PROGRAM_ID,
+      keys: [
+        { pubkey: foreignAta, isSigner: false, isWritable: true },
+        { pubkey: new PublicKey(TEST_QUOTE_MINT), isSigner: false, isWritable: false },
+        { pubkey: f.wallet.publicKey, isSigner: true, isWritable: false },
+      ],
+      data: Buffer.alloc(0),
+    });
+    rejectRule(() => f.policy.validate(
+      f.build([transferChecked, f.routerInstruction()]), f.baseInput,
+    ), 'jupiter_swap_binding');
+  });
+
+  it('rejects a Jupiter swap delivered as a legacy transaction', () => {
+    const f = jupiterFixture();
+    const legacy = new Transaction({ feePayer: f.wallet.publicKey, recentBlockhash: BLOCKHASH })
+      .add(f.routerInstruction());
+    rejectRule(() => f.policy.validate(legacy, f.baseInput), 'jupiter_swap_binding');
+  });
+});

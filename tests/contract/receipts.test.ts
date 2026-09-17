@@ -1,4 +1,4 @@
-/** Plan §7 contract gate: receipt envelope conformance (protocol.ts shapes). */
+/** Contract coverage for receipt envelope conformance. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ExecResponse, TxReceipt } from '../../src/protocol.js';
 import { requestsByVerb } from '../helpers/requests.js';
@@ -21,7 +21,7 @@ afterAll(async () => {
 
 const STATUS: TxReceipt['status'][] = ['confirmed', 'finalized', 'pending', 'failed'];
 
-/** Receipts must be chain-observable truth: never estimates (plan §2). */
+/** Receipts must reflect chain-observable truth, never estimates. */
 function expectReceipts(response: ExecResponse): void {
   expect(Array.isArray(response.tx_signatures)).toBe(true);
   expect(Array.isArray(response.transactions)).toBe(true);

@@ -19,6 +19,7 @@ import {
 import { errorResponse, type ExecHandlers, type ExecResponse } from './protocol.js';
 import { BadRequest, dispatch, parseRequest } from './requests.js';
 import { MeteoraReads, type ReadAuditContext } from './meteora.js';
+import { createJitoClient } from './jito.js';
 import { JsonlWriter } from './jsonl.js';
 import { SwapStream } from './swapStream.js';
 import { getSolanaConnection } from './vendor/lp-monitor/solana.js';
@@ -162,11 +163,20 @@ export async function runBridge({
                   : 'stub'
                 : null
               : 'stub',
+        message_hashes: writeAudit?.messageHashes ?? [],
         signer_id: writeAudit?.signerId ?? null,
-        bundle_id: null,
+        bundle_id: writeAudit?.bundleId ?? null,
       };
       try {
         log.write(entry);
+        if (writeAudit?.bundleRecord) {
+          log.write({
+            kind: 'jito_bundle',
+            ts: responded / 1000,
+            method,
+            ...writeAudit.bundleRecord,
+          });
+        }
         if (writeAudit?.policyDecision === 'rejected' && writeAudit.policyRule) {
           log.write({
             kind: 'policy_rejected',
@@ -250,11 +260,15 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
         signer,
         policy: new TransactionPolicy(config, signer.publicKey),
         commitment: config.commitment,
+        config,
+        ...(config.jitoEnabled && config.jitoTipAccount
+          ? { jito: createJitoClient(config) }
+          : {}),
       });
       handlers = m4;
       writeAuditContext = () => m4.writeAudit();
     } else {
-      handlers = createReadHandlers(reads!);
+      handlers = createReadHandlers(reads!, config);
     }
     log.write({
       kind: 'executor_started',
@@ -275,7 +289,7 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
         ? 'test fixture: injected handlers; no RPC, simulation, or signing'
         : config.dryRun
           ? 'M3: live reads + decoded swap stream; write verbs remain gated; no signer loaded'
-          : 'M4: policy-bound deposit/withdraw wired; M5 swap/refresh_bundle gated',
+          : 'M5: policy-bound deposit/withdraw, direct-pool swap (aggregator route on stand-by), and refresh_bundle (Jito bundle when enabled, else sequential) wired',
     });
     const stream = injectedHandlers ? undefined : await startSwapStream(config, reads!, log);
     return await runBridge({
@@ -296,13 +310,13 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
 }
 
 /**
- * Start the §6 swap stream for every allow-listed pool.
+ * Start the swap stream for every allow-listed pool.
  *
  * Read-only and independent of signing, so it runs in M3 before any custody
  * exists. Startup failure is contained: a stream that cannot be built must not
  * take the verb loop down with it, but the failure is loud on stderr because a
- * run without this feed has no verified fills (spec §6 — "not an optional
- * phase"). The keeper's `verify_log.py` fails closed on the missing rows.
+ * run without this feed has no verified fills. Downstream verification fails
+ * closed when the feed is missing.
  */
 async function startSwapStream(
   config: ExecutorConfig,
@@ -340,9 +354,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   const code = await main();
   // Explicit exit, not just `exitCode`: the swap stream's RPC websocket holds
   // timers and socket handles that `close()` can only ask the client to drop.
-  // A subprocess whose lifetime is the keeper's must terminate when stdin
-  // closes, or `ExecBridge.start()` never sees the restart it relies on
-  // (spec §2). Everything is already flushed — the audit ledger is closed and
+  // A subprocess whose lifetime is controlled by its stdin owner must
+  // terminate when stdin closes, or the owner cannot reliably restart it.
+  // Everything is already flushed — the audit ledger is closed and
   // every response written — so exiting here loses nothing.
   process.exit(code);
 }

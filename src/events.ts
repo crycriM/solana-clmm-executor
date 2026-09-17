@@ -1,5 +1,5 @@
 /**
- * Borsh decoding of Meteora DLMM program events (spec §6).
+ * Borsh decoding of Meteora DLMM program events.
  *
  * The DLMM IDL (v0.9.0, `@meteora-ag/dlmm@1.5.0`) declares `events` but ships
  * no matching `types` entries and no `discriminator` bytes, so Anchor 0.30's
@@ -12,8 +12,8 @@
  * - `GoToABin`: emitted when the active bin moves without a swap; carries the
  *   authoritative `fromBinId`/`toBinId` pair.
  *
- * Amounts are u64: they are handed back as `BN`, never `toNumber()` (spec §5
- * "must not copy" — the value exceeds Number.MAX_SAFE_INTEGER).
+ * Amounts are u64: they are handed back as `BN`, never `toNumber()`, because
+ * the value exceeds Number.MAX_SAFE_INTEGER.
  */
 import { createHash } from 'node:crypto';
 import BN from 'bn.js';
