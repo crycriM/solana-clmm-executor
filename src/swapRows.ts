@@ -75,13 +75,16 @@ export function swapToRow(
   if (!Number.isSafeInteger(prevActiveBin) || !Number.isSafeInteger(newActiveBin)) {
     return null;
   }
-  // amountIn is denominated in the token being sold. swapForY means the taker
-  // sold Y (quote) for X (base), so in=quote/out=base; otherwise in=base.
-  // Neither value may be guessed. The bridge warms metadata before it starts
-  // the subscription; this guard protects injected and degraded hosts too.
+  // amountIn is denominated in the token being sold. `swapForY` means the taker
+  // swapped *for* Y: it sold X (base) and received Y (quote), so in=base/out=quote
+  // — the same convention as `dlmmSwap.ts` (`swapForY = in_mint === tokenX`) and
+  // `handlers.ts`. It is also what the chain shows: a swapForY swap moves the
+  // active bin down. Neither value may be guessed. The bridge warms metadata
+  // before it starts the subscription; this guard protects injected and degraded
+  // hosts too.
   if (ctx.blockTime === null || decimals === null) return null;
-  const inDecimals = swap.swapForY ? decimals.quote : decimals.base;
-  const outDecimals = swap.swapForY ? decimals.base : decimals.quote;
+  const inDecimals = swap.swapForY ? decimals.base : decimals.quote;
+  const outDecimals = swap.swapForY ? decimals.quote : decimals.base;
   const inAmount = toAmount(swap.amountIn, inDecimals);
   const outAmount = toAmount(swap.amountOut, outDecimals);
   const direction: Direction = newActiveBin > prevActiveBin ? 'up' : 'down';

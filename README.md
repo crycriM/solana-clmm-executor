@@ -5,6 +5,25 @@ executor is the signing boundary for an external keeper or orchestration layer:
 it validates requests, applies policy, simulates transactions, signs only
 approved mutations, and returns structured receipts.
 
+Some parts are reusable for Raydium or Orca:
+- JSONL bridge and handler dispatch
+- KMS/file signing
+- simulation, submission, confirmation, and receipts
+- RPC failover/rate limiting
+- Jito bundle orchestration
+- logging, budgets, allow-lists, and audit infrastructure
+
+Some parts are venue-specific:
+- Pool/position reads
+- Liquidity builder
+- Withdraw/fee collection
+- Direct swaps
+- Transaction policy
+- Swap stream.
+
+The main difference is the representation of liquidity positions in bins or ticks, which 
+will directly affect the modelling of market-making ladders.
+
 > **Security:** This service can control a Solana wallet. Run it only in an
 > isolated environment with a dedicated, balance-capped wallet. Never commit
 > key material, RPC credentials, live environment files, or execution logs.

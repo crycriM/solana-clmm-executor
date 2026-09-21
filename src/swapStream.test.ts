@@ -67,7 +67,9 @@ function swapLogs(options: {
     endBinId: options.endBinId,
     amountIn: options.amountIn ?? '12500000000',
     amountOut: options.amountOut ?? '1760200000',
-    swapForY: options.swapForY ?? true,
+    // Default to the side the bin move implies: selling X (swapForY) pushes
+    // the active bin down, buying X pushes it up.
+    swapForY: options.swapForY ?? options.endBinId < options.startBinId,
     fee: options.fee ?? '31250000',
     feeBps: options.feeBps ?? '2500000000000000000',
   });
@@ -87,7 +89,7 @@ function eventCpiSwap(options: Parameters<typeof swapLogs>[0]): string {
     endBinId: options.endBinId,
     amountIn: options.amountIn ?? '12500000000',
     amountOut: options.amountOut ?? '1760200000',
-    swapForY: options.swapForY ?? true,
+    swapForY: options.swapForY ?? options.endBinId < options.startBinId,
     fee: options.fee ?? '31250000',
     feeBps: options.feeBps ?? '2500000000000000000',
   });
@@ -211,7 +213,7 @@ describe('swap event → stream row mapping', () => {
       prev_active_bin: 8123,
       new_active_bin: 8127,
     });
-    // swapForY: the taker sold quote (6 dp) for base (9 dp).
+    // Bin rose, so the taker bought X: sold quote (6 dp) for base (9 dp).
     expect(rows[0]!.amount_in).toBeCloseTo(12500, 6);
     expect(rows[0]!.amount_in_raw).toBe('12500000000');
     expect(rows[0]!.amount_out).toBeCloseTo(1.7602, 9);
@@ -243,12 +245,12 @@ describe('swap event → stream row mapping', () => {
 
   it('keeps a > 2^53 raw amount exact (BN.toNumber regression)', () => {
     const huge = '10000000411680503305';
-    // swapForY=false: the taker sold base (9 decimals), so the huge raw is
+    // swapForY: the taker sold base (9 decimals), so the huge raw is
     // scaled by 1e9 and the decimal keeps all 20 significant digits.
     const rows = decodeLogs(
       {
         err: null,
-        logs: swapLogs({ startBinId: 1, endBinId: 1, amountIn: huge, amountOut: '1', swapForY: false }),
+        logs: swapLogs({ startBinId: 1, endBinId: 1, amountIn: huge, amountOut: '1', swapForY: true }),
         signature: 'sigD',
       },
       { slot: 1, blockTime: 1, ts: 1 },
@@ -264,17 +266,40 @@ describe('swap event → stream row mapping', () => {
 
   it('scales amount_in by the token actually sold', () => {
     const quoteSwap = decodeLogs(
-      { err: null, logs: swapLogs({ startBinId: 1, endBinId: 1, amountIn: '4200000000', swapForY: true }), signature: 'q' },
+      { err: null, logs: swapLogs({ startBinId: 1, endBinId: 1, amountIn: '4200000000', swapForY: false }), signature: 'q' },
       { slot: 1, blockTime: 1, ts: 1 }, [POOL], () => DECIMALS,
     );
     const baseSwap = decodeLogs(
-      { err: null, logs: swapLogs({ startBinId: 1, endBinId: 1, amountIn: '4200000000', swapForY: false }), signature: 'b' },
+      { err: null, logs: swapLogs({ startBinId: 1, endBinId: 1, amountIn: '4200000000', swapForY: true }), signature: 'b' },
       { slot: 1, blockTime: 1, ts: 1 }, [POOL], () => DECIMALS,
     );
     // Same raw, different token: quote (6 dp) vs base (9 dp).
     expect(quoteSwap[0]!.amount_in).toBeCloseTo(4200, 6);
     expect(baseSwap[0]!.amount_in).toBeCloseTo(4.2, 9);
     expect(quoteSwap[0]!.amount_in_raw).toBe(baseSwap[0]!.amount_in_raw);
+  });
+
+  it('prices a real mainnet swap at its active-bin price', () => {
+    // Regression for the inverted `swapForY` mapping: a recorded swap from the
+    // M3 capture (pool 5rCf1…, bin step 4 bps, WSOL 9 dp / USDC 6 dp). The
+    // implied price must land on the bin price, ~99.35 USDC per SOL — the
+    // inverted mapping priced it ~10_070, off by 1e2 and undetectable in a
+    // fixture built from the same wrong assumption.
+    const rows = decodeLogs(
+      {
+        err: null,
+        logs: swapLogs({
+          startBinId: -5774, endBinId: -5774,
+          amountIn: '3923850300', amountOut: '389665415', swapForY: true,
+        }),
+        signature: 'm3',
+      },
+      { slot: 445927260, blockTime: 1789056995, ts: 1789057008.111 },
+      [POOL], () => DECIMALS,
+    );
+    const binPrice = 1.0004 ** -5774 * 10 ** (DECIMALS.base - DECIMALS.quote);
+    const implied = rows[0]!.amount_out / rows[0]!.amount_in;
+    expect(implied / binPrice).toBeCloseTo(1, 2);
   });
 
   it('drops failed transactions: their swaps never landed', () => {
