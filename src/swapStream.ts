@@ -190,7 +190,7 @@ export class SwapStream {
       (async (signature) => {
         const tx = await this.connection.getParsedTransaction(signature, {
           commitment: this.commitment,
-          maxSupportedTransactionVersion: 0,
+          maxSupportedTransactionVersion: 1,
         });
         if (tx === null) return null;
         return {
@@ -217,7 +217,7 @@ export class SwapStream {
       (async (slot) => {
         const block = await this.connection.getParsedBlock(slot, {
           commitment: this.commitment,
-          maxSupportedTransactionVersion: 0,
+          maxSupportedTransactionVersion: 1,
           transactionDetails: 'full',
           rewards: false,
         });

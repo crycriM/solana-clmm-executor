@@ -298,7 +298,7 @@ describe('swap event → stream row mapping', () => {
       [POOL], () => DECIMALS,
     );
     const binPrice = 1.0004 ** -5774 * 10 ** (DECIMALS.base - DECIMALS.quote);
-    const implied = rows[0]!.amount_out / rows[0]!.amount_in;
+    const implied = rows[0]!.amount_out! / rows[0]!.amount_in!;
     expect(implied / binPrice).toBeCloseTo(1, 2);
   });
 
