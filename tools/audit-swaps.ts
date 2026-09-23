@@ -11,11 +11,15 @@
  * Default window: the capture's first..last row slot. Cost is one
  * getTransaction per successful pool transaction in the window, so audit
  * sampled windows of a long soak rather than the whole file.
- * ponytail: fixed 250 ms pacing (~160 CU/s on Alchemy), no adaptive limiter.
+ *
+ * Reads go through the executor's CU limiter. Alchemy's CU/s budget is
+ * account-wide, so a capture on the same key keeps its SOLANA_RPC_MAX_CU_PER_SECOND
+ * and the audit takes AUDIT_MAX_CU_PER_SECOND (default 50) of what is left.
  */
 import fs from 'node:fs';
 import { Connection, PublicKey, type ConfirmedSignatureInfo } from '@solana/web3.js';
 import { decodeLogs, DLMM_PROGRAM_ID } from '../src/swapStream.js';
+import { RpcCuRateLimiter, rateLimitedFetch } from '../src/rpcRateLimit.js';
 
 const [file, fromArg, toArg] = process.argv.slice(2);
 const pool = process.env['POOL_ALLOWLIST']?.split(',')[0];
@@ -31,8 +35,13 @@ const rows = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
 if (rows.length === 0) throw new Error(`no rows for ${pool} in ${file}`);
 const fromSlot = Number(fromArg ?? Math.min(...rows.map((r) => r.slot)));
 const toSlot = Number(toArg ?? Math.max(...rows.map((r) => r.slot)));
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const conn = new Connection(rpc, 'finalized');
+const limiter = new RpcCuRateLimiter(Number(process.env['AUDIT_MAX_CU_PER_SECOND'] ?? 50));
+// Our wrapper owns 429 backoff (it pauses the bucket); web3.js's own retry would bypass it.
+const conn = new Connection(rpc, {
+  commitment: 'finalized',
+  disableRetryOnRateLimit: true,
+  fetch: rateLimitedFetch(limiter, globalThis.fetch, { attempts: 10 }),
+});
 
 // Newest-first pages; start from the newest captured signature at or below
 // toSlot so the walk begins inside the window instead of at chain tip.
@@ -44,7 +53,6 @@ for (;;) {
   history.push(...page.filter((s) => s.slot >= fromSlot && s.slot <= toSlot));
   if (page.length < 1000 || page.at(-1)!.slot < fromSlot) break;
   before = page.at(-1)!.signature;
-  await sleep(250);
 }
 // The anchor itself is excluded by `before`; it is in the window by definition.
 if (before !== undefined && anchor) history.push({ signature: anchor.tx_signature, slot: anchor.slot, err: null } as ConfirmedSignatureInfo);
@@ -55,7 +63,6 @@ for (const info of history) {
   if (info.err) continue;
   const tx = await conn.getParsedTransaction(info.signature, { commitment: 'finalized', maxSupportedTransactionVersion: 1 });
   fetched += 1;
-  await sleep(250);
   if (!tx) throw new Error(`transaction unavailable: ${info.signature}`);
   const events = (tx.meta?.innerInstructions ?? []).flatMap((g) => g.instructions)
     .filter((ix) => 'data' in ix && ix.programId.toBase58() === DLMM_PROGRAM_ID)

@@ -1,0 +1,25 @@
+# systemd user unit for the long read-only swap capture (tools/capture-swaps.sh).
+#
+#   cp tools/capture-swaps.service ~/.config/systemd/user/
+#   # edit WorkingDirectory (and the env-file argument if not .env.capture)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now capture-swaps
+#   loginctl enable-linger "$USER"      # start at boot without a login session
+#   journalctl --user -u capture-swaps -f
+#
+# A reboot is still a coverage hole: stream cursors are in memory, so the
+# restarted bridge resumes from "now". The restart timestamps in the journal
+# bound the hole.
+[Unit]
+Description=Meteora DLMM read-only swap capture
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/solana-clmm-executor
+ExecStart=/usr/bin/env bash tools/capture-swaps.sh .env.capture
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
