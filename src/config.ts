@@ -71,6 +71,9 @@ export interface ExecutorConfig {
   /** Top-level program IDs a Jupiter-built swap transaction may call. */
   jupiterProgramIds: string[];
   swapStreamPath: string;
+  /** Opt-in read-only pool-depth sampler (DEPTH_SAMPLE_PATH); null = off. */
+  depthSamplePath: string | null;
+  depthSampleIntervalS: number;
   executorLogDir: string;
   dryRun: boolean;
 }
@@ -182,6 +185,8 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
       ? [...new Set(splitList(env['JUPITER_PROGRAM_ALLOWLIST']))].sort()
       : [DEFAULT_JUPITER_PROGRAM_ID],
     swapStreamPath: required(env, 'SWAP_STREAM_PATH'),
+    depthSamplePath: optional(env, 'DEPTH_SAMPLE_PATH') || null,
+    depthSampleIntervalS: env['DEPTH_SAMPLE_INTERVAL_S'] ? number(env, 'DEPTH_SAMPLE_INTERVAL_S') : 60,
     executorLogDir: optional(env, 'EXECUTOR_LOG_DIR', 'logs'),
     dryRun: boolean(env, 'DRY_RUN'),
   };
@@ -231,6 +236,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     ['JITO_TIP_LAMPORTS', config.jitoTipLamports],
   ] as const) {
     if (value < 0) throw new ConfigValidationError(`${key} must be non-negative`);
+  }
+  if (config.depthSampleIntervalS < 5) {
+    throw new ConfigValidationError('DEPTH_SAMPLE_INTERVAL_S must be at least 5');
   }
   if (config.maxSlippageBps > 10_000) {
     throw new ConfigValidationError('MAX_SLIPPAGE_BPS must be at most 10000');

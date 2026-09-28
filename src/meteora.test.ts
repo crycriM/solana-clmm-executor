@@ -136,6 +136,20 @@ function fakePool(): PoolReader {
     async getActiveBin() {
       return { binId: state.active_bin };
     },
+    async getBinsBetweenLowerAndUpperBound(lower: number, upper: number) {
+      const bins = [];
+      for (let binId = lower; binId <= upper; binId += 1) {
+        bins.push({
+          binId,
+          pricePerToken: String(100 + binId - state.active_bin),
+          xAmount: new BN(binId > state.active_bin ? 1_000_000_000 : 0),
+          yAmount: new BN(
+            binId < state.active_bin ? 100_000_000 : binId === state.active_bin ? 50_000_000 : 0,
+          ),
+        });
+      }
+      return { bins };
+    },
     getFeeInfo() {
       return {
         baseFeeRatePercentage: {
@@ -222,6 +236,26 @@ function harness(connections: FakeConnection[] = [new FakeConnection()], pricesA
   });
   return { reads, audit, counts: () => ({ creates, mappings, priceCalls }) };
 }
+
+describe('depth sampler read', () => {
+  it('reads pool reserves around the freshly fetched active bin', async () => {
+    const row = await harness().reads.getDepth(TEST_POOL, 1);
+    expect(row).toEqual({
+      ts: 1_756_900_001.123,
+      pool: TEST_POOL,
+      active_bin: state.active_bin,
+      bins: [
+        { bin_id: state.active_bin - 1, price: 99, x_raw: '0', y_raw: '100000000' },
+        { bin_id: state.active_bin, price: 100, x_raw: '0', y_raw: '50000000' },
+        { bin_id: state.active_bin + 1, price: 101, x_raw: '1000000000', y_raw: '0' },
+      ],
+    });
+  });
+
+  it('refuses a pool outside the allow-list', async () => {
+    await expect(harness().reads.getDepth(TEST_BASE_MINT, 1)).rejects.toThrow(InvalidPoolError);
+  });
+});
 
 describe('M2 get_state recorded RPC mapping', () => {
   it('preserves >2^53 raw strings and caches immutable pool metadata', async () => {

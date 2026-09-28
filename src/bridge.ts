@@ -22,6 +22,7 @@ import { MeteoraReads, type ReadAuditContext } from './meteora.js';
 import { createJitoClient } from './jito.js';
 import { JsonlWriter } from './jsonl.js';
 import { SwapStream } from './swapStream.js';
+import { DEPTH_BINS_EACH_SIDE, DepthSampler } from './depthSampler.js';
 import { getSolanaConnection } from './vendor/lp-monitor/solana.js';
 import { PublicKey } from '@solana/web3.js';
 
@@ -292,6 +293,11 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
           : 'M5: policy-bound deposit/withdraw, direct-pool swap (aggregator route on stand-by), and refresh_bundle (Jito bundle when enabled, else sequential) wired',
     });
     const stream = injectedHandlers ? undefined : await startSwapStream(config, reads!, log);
+    const depth = injectedHandlers ? undefined : startDepthSampler(config, wallet, log);
+    const feeds =
+      stream && depth
+        ? { start: () => undefined, close: async () => { depth.close(); await stream.close(); } }
+        : (stream ?? depth);
     return await runBridge({
       config,
       handlers,
@@ -299,7 +305,7 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
       handlerMode: injectedHandlers ? 'stub' : config.dryRun ? 'm2' : 'm4',
       readAuditContext: reads ? () => reads.auditContext() : undefined,
       ...(writeAuditContext === undefined ? {} : { writeAuditContext }),
-      ...(stream === undefined ? {} : { swapStream: stream }),
+      ...(feeds === undefined ? {} : { swapStream: feeds }),
     });
   } catch (error) {
     logError(error instanceof ConfigValidationError ? error.message : 'Executor failed');
@@ -345,6 +351,35 @@ async function startSwapStream(
     writer?.close();
     logError(
       `swap stream unavailable: ${error instanceof Error ? error.message : 'unknown error'}`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * Opt-in (DEPTH_SAMPLE_PATH); same containment as the swap stream. Its own
+ * reader: a shared one would let a timer-driven sample overwrite the per-verb
+ * audit context (`auditContext()`) of a verb in flight.
+ */
+function startDepthSampler(
+  config: ExecutorConfig,
+  wallet: PublicKey,
+  log: ExecutorLog,
+): DepthSampler | undefined {
+  if (!config.depthSamplePath) return undefined;
+  try {
+    const reads = new MeteoraReads(config, wallet, { audit: (line) => log.write(line) });
+    const sampler = new DepthSampler({
+      pools: config.poolAllowlist,
+      intervalMs: config.depthSampleIntervalS * 1000,
+      read: (pool) => reads.getDepth(pool, DEPTH_BINS_EACH_SIDE),
+      writer: new JsonlWriter(config.depthSamplePath),
+    });
+    sampler.start();
+    return sampler;
+  } catch (error) {
+    logError(
+      `depth sampler unavailable: ${error instanceof Error ? error.message : 'unknown error'}`,
     );
     return undefined;
   }

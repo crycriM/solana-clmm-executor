@@ -96,6 +96,15 @@ export interface BnLike {
   toString(): string;
 }
 
+/** One depth-sampler row: pool reserves per bin around the active bin. */
+export interface DepthRow {
+  ts: number;
+  pool: string;
+  active_bin: number;
+  /** `price` is quote per base, decimal-adjusted; x = base, y = quote. */
+  bins: { bin_id: number; price: number; x_raw: string; y_raw: string }[];
+}
+
 export interface PoolReader {
   readonly pubkey: PublicKey;
   readonly lbPair: {
@@ -118,6 +127,11 @@ export interface PoolReader {
     transferHookAccountMetas?: unknown[];
   };
   getActiveBin(): Promise<{ binId: number }>;
+  /** Pool-wide bin reserves; present on real SDK instances (depth sampler). */
+  getBinsBetweenLowerAndUpperBound?(
+    lowerBinId: number,
+    upperBinId: number,
+  ): Promise<{ bins: { binId: number; xAmount: BnLike; yAmount: BnLike; pricePerToken: string }[] }>;
   getFeeInfo(): { baseFeeRatePercentage: { mul(value: number): { toString(): string } } };
   getPosition(address: PublicKey): Promise<LbPosition>;
   /** Direct DLMM swap leg (plan T5.1); present on real SDK instances. */
@@ -613,6 +627,40 @@ export class MeteoraReads {
         // adds latency/CU and can race ahead of the state we actually read.
         slot: Math.max(walletX.slot, walletY.slot, reserveX.slot, reserveY.slot),
         fetched_at: this.now() / 1000,
+      };
+    });
+  }
+
+  /**
+   * Pool liquidity in the active bin and `binsEachSide` neighbours: whole-pool
+   * reserves, not ours. The active id comes from `getActiveBin()`, which
+   * refetches the pair; the SDK's `getBinsAroundActiveBin` reads a cached one.
+   */
+  async getDepth(poolAddress: string, binsEachSide: number): Promise<DepthRow> {
+    this.beginOperation();
+    if (!this.config.poolAllowlist.includes(poolAddress)) {
+      throw new InvalidPoolError('Pool is not allow-listed');
+    }
+    return this.rpc(async (endpoint) => {
+      const pool = this.reader(await this.pool(endpoint, poolAddress), endpoint);
+      if (!pool.getBinsBetweenLowerAndUpperBound) {
+        throw new Error('SDK pool reader has no bin range read');
+      }
+      const active = (await pool.getActiveBin()).binId;
+      const { bins } = await pool.getBinsBetweenLowerAndUpperBound(
+        active - binsEachSide,
+        active + binsEachSide,
+      );
+      return {
+        ts: this.now() / 1000,
+        pool: poolAddress,
+        active_bin: active,
+        bins: bins.map((bin) => ({
+          bin_id: bin.binId,
+          price: Number(bin.pricePerToken),
+          x_raw: rawSdkAmount(bin.xAmount.toString()),
+          y_raw: rawSdkAmount(bin.yAmount.toString()),
+        })),
       };
     });
   }

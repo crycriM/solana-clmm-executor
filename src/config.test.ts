@@ -4,6 +4,13 @@ import type { RawAmount } from './protocol.js';
 import { baseEnv, TEST_POOL, TEST_BASE_MINT } from './testing.js';
 
 describe('config fail-closed', () => {
+  it('depth sampler is off by default and refuses sub-5 s intervals', () => {
+    expect(loadConfig(baseEnv())).toMatchObject({ depthSamplePath: null, depthSampleIntervalS: 60 });
+    expect(() =>
+      loadConfig(baseEnv({ DEPTH_SAMPLE_PATH: '/tmp/d.jsonl', DEPTH_SAMPLE_INTERVAL_S: '1' })),
+    ).toThrow(ConfigValidationError);
+  });
+
   const required = [
     'SOLANA_RPC_URL',
     'WALLET_SIGNER',
