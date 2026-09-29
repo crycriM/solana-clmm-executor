@@ -87,7 +87,9 @@ export function swapToRow(
   const outDecimals = swap.swapForY ? decimals.quote : decimals.base;
   const inAmount = toAmount(swap.amountIn, inDecimals);
   const outAmount = toAmount(swap.amountOut, outDecimals);
-  const direction: Direction = newActiveBin > prevActiveBin ? 'up' : 'down';
+  // From the taker's side, not the bin move: an in-bin swap leaves the bin
+  // unchanged but still has a direction.
+  const direction: Direction = swap.swapForY ? 'down' : 'up';
   const feeBps = feeBpsPaid(swap);
   return {
     tx_signature: ctx.signature,

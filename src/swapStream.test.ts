@@ -243,6 +243,18 @@ describe('swap event → stream row mapping', () => {
     expect(rows[0]!.direction).toBe('down');
   });
 
+  it('derives direction from swapForY when the active bin does not move', () => {
+    for (const [swapForY, direction] of [[true, 'down'], [false, 'up']] as const) {
+      const rows = decodeLogs(
+        { err: null, logs: swapLogs({ startBinId: 9000, endBinId: 9000, swapForY }), signature: 'sigE' },
+        { slot: 1, blockTime: 1, ts: 1 },
+        [POOL],
+        () => DECIMALS,
+      );
+      expect(rows[0]!.direction).toBe(direction);
+    }
+  });
+
   it('keeps a > 2^53 raw amount exact (BN.toNumber regression)', () => {
     const huge = '10000000411680503305';
     // swapForY: the taker sold base (9 decimals), so the huge raw is
