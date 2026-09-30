@@ -320,7 +320,6 @@ export class TransactionPolicy {
       this.validateInstruction(
         instruction.programId,
         instruction.keys.map((key) => ({ key: key.pubkey, isWritable: key.isWritable, isSigner: key.isSigner })),
-        instruction.data,
         allowedWritable,
       );
     }
@@ -395,7 +394,6 @@ export class TransactionPolicy {
         this.validateInstruction(
           instruction.program,
           instruction.accountKeys,
-          instruction.data,
           allowedWritable,
         );
       }
@@ -541,7 +539,6 @@ export class TransactionPolicy {
   private validateInstruction(
     program: PublicKey,
     accounts: { key: PublicKey; isWritable: boolean; isSigner: boolean }[],
-    data: Buffer,
     allowedWritable: Set<string>,
   ): void {
     if (!this.programs.has(program.toBase58())) {
