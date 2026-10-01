@@ -42,9 +42,10 @@ The gateway currently supports:
 - JSONL requests and responses over standard input/output;
 - structured audit logging and explicit ambiguous-submission failures.
 
-The Jupiter aggregator route is intentionally disabled until its instruction
-binding has been independently verified. Unsupported or ambiguous operations
-fail closed rather than being retried blindly.
+The executor has no aggregator route: `swap` requires a DLMM pool, and
+`pool: null` is rejected. A Jupiter route belongs to the Hummingbot Gateway
+path (`hb-enhanced-opms`), not to this signer. Unsupported or ambiguous
+operations fail closed rather than being retried blindly.
 
 ## Requirements
 

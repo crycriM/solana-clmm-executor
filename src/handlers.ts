@@ -69,7 +69,6 @@ import {
 } from './swap.js';
 import {
   executeLegacyTransaction,
-  executeVersionedTransaction,
   SimulationFailed,
   SubmissionAmbiguous,
   type ExecutedTransaction,
@@ -77,7 +76,7 @@ import {
   type ExecutionConnection,
   type TransactionMeta,
 } from './transactions.js';
-import { PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
+import { PublicKey, Transaction } from '@solana/web3.js';
 
 export const STUB_POSITION = 'stub_position_001';
 /** Ask legs land in a distinct PDA on chain; the dry-run stub mirrors that so
@@ -195,7 +194,7 @@ export function createStubHandlers(): ExecHandlers {
       );
     },
     async withdraw(req) {
-      const fraction = Math.min(100, Math.max(1, req.bps)) / 100;
+      const fraction = req.percent / 100;
       return ok(
         {
           position_id: req.position_id,
@@ -380,10 +379,6 @@ export interface WriteDependencies {
     tx: Transaction,
     options: Parameters<typeof executeLegacyTransaction>[1],
   ) => Promise<ExecutedTransaction>;
-  executeVersioned?: (
-    tx: VersionedTransaction,
-    options: Parameters<typeof executeVersionedTransaction>[1],
-  ) => Promise<ExecutedTransaction>;
   /** Injectable for offline bundle verification; defaults to the real path. */
   bundleSubmit?: (legs: BundleLeg[], dependencies: BundleDependenciesLike) => Promise<BundleOutcome>;
 }
@@ -548,7 +543,7 @@ function ambiguousBundleResult(
 
 /** A fully built, policy-bound swap transaction awaiting execution. */
 interface SwapPlan {
-  transaction: Transaction | VersionedTransaction;
+  transaction: Transaction;
   policyInput: PolicyInput;
   amountInRaw: bigint;
   minOutRaw: bigint;
@@ -556,7 +551,7 @@ interface SwapPlan {
   outMint: string;
   inDecimals: number;
   outDecimals: number;
-  route: 'jupiter' | 'meteora';
+  route: 'meteora';
   /** Pool PDA owning the wSOL reserve for direct DLMM swaps; null otherwise. */
   wsolReserveOwner: string | null;
 }
@@ -653,7 +648,7 @@ function writeErrorResponse(error: unknown): ExecResponse<never> | null {
 
 /**
  * Write composition (M4 + M5): policy-bound deposit, withdrawal, swap on both
- * direct Meteora `swap2` swaps (the aggregator route is on stand-by),
+ * direct Meteora `swap2` swaps (no aggregator route),
  * and `refresh_bundle` — sequential legs by default, one atomic Jito bundle
  * when `JITO_ENABLED=true`.
  */
@@ -681,19 +676,6 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
       policy: dependencies.policy,
       policyInput,
       commitment,
-    });
-  };
-  const executeWriteVersioned = (
-    transaction: VersionedTransaction,
-    policyInput: PolicyInput,
-  ) => {
-    const execute = dependencies.executeVersioned ?? executeVersionedTransaction;
-    return execute(transaction, {
-      connection: dependencies.connection,
-      signer: dependencies.signer,
-      policy: dependencies.policy,
-      policyInput,
-      commitment: dependencies.commitment,
     });
   };
   const recordOutcome = (audit: WriteAuditContext, error: unknown): ExecResponse<never> | null => {
@@ -885,19 +867,11 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
     };
   };
 
-  const executeSwapTransaction = (
-    transaction: Transaction | VersionedTransaction,
-    policyInput: PolicyInput,
-  ): Promise<ExecutedTransaction> =>
-    transaction instanceof VersionedTransaction
-      ? executeWriteVersioned(transaction, policyInput)
-      : executeWrite(transaction, policyInput);
-
   const runSwap = async (req: SwapRequest): Promise<ExecResponse<SwapData>> => {
     const audit = resetWriteAudit();
     try {
       const plan = await buildSwapPlan(req);
-      const executed = await executeSwapTransaction(plan.transaction, plan.policyInput);
+      const executed = await executeWrite(plan.transaction, plan.policyInput);
       audit.policyDecision = 'allowed';
       audit.blockhash = executed.blockhash;
       audit.simulationOk = true;
@@ -983,7 +957,7 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
     ]);
     const withdrawPlan = buildWithdrawalTransaction({
       wallet: dependencies.signer.publicKey,
-      request: { method: 'withdraw', position_id: req.withdraw_position_id, bps: 100 },
+      request: { method: 'withdraw', position_id: req.withdraw_position_id, percent: 100 },
       position: before,
       pool,
     });
@@ -1232,7 +1206,7 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
     const withdrawn = await runWithdraw({
       method: 'withdraw',
       position_id: req.withdraw_position_id,
-      bps: 100,
+      percent: 100,
     });
     if (!withdrawn.ok || withdrawn.data === null) {
       return {

@@ -124,8 +124,8 @@ async function main() {
         + 'policy must accept tolerance 0 as zero, not inflate it to the SDK default');
     }
     const positionId = deposit.position_id ?? deposit.data.position_id;
-    const close = await client.request({ method: 'withdraw', position_id: positionId, bps: 100 });
-    exchanges.push({ phase: 'B', request: { method: 'withdraw', position_id: positionId, bps: 100 }, response: close });
+    const close = await client.request({ method: 'withdraw', position_id: positionId, percent: 100 });
+    exchanges.push({ phase: 'B', request: { method: 'withdraw', position_id: positionId, percent: 100 }, response: close });
     if (!close.ok || close.data?.closed !== true || close.transactions[0]?.status !== 'finalized') {
       throw new Error(`phase B: close incomplete: ${JSON.stringify(close.error ?? close.data?.closed)}`);
     }

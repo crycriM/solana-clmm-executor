@@ -56,8 +56,9 @@ export interface DepositSingleSidedRequest {
 export interface WithdrawRequest {
   method: 'withdraw';
   position_id: string;
-  /** Hundredths of the position as the keeper uses it: 100 = full exit. */
-  bps: number;
+  /** Integer percent of the position, 1..100 (100 = full exit; claims fees and
+   *  closes). Out of range is bad_request, never clamped. Not basis points. */
+  percent: number;
 }
 
 export interface SwapRequest {
@@ -67,7 +68,8 @@ export interface SwapRequest {
   /** Decimal, in in_mint units. */
   amount: number;
   max_slippage_bps: number;
-  /** The DLMM pool to swap against. `null` (aggregator route) is on stand-by. */
+  /** The DLMM pool to swap against. `null` is bad_request: the executor has no
+   *  aggregator route (Jupiter belongs to the HB Gateway path). */
   pool: string | null;
 }
 
@@ -141,6 +143,10 @@ export interface ExecResponse<D = unknown> {
   tx_signatures: string[];
   transactions: TxReceipt[];
   position_id?: string | null;
+  /** Echo of the request's optional `id` (any verb; envelope metadata, not a
+   *  verb field). Absent when the request had none, was not valid JSON, or the
+   *  id was not /^[A-Za-z0-9_-]{1,40}$/. Single-flight order is unchanged. */
+  id?: string;
 }
 
 export interface TokenMeta { mint: string; decimals: number; symbol?: string }
@@ -276,7 +282,8 @@ export interface SwapStreamRow {
   block_time: number;
   ts: number;
   pool: string;
-  /** Optional — the observer derives it from the bin delta. */
+  /** Taker side (from swapForY). The observer uses it only for in-bin swaps;
+   *  when the bin moves, the bin delta decides. */
   direction?: Direction;
   /** Actual pre/post-swap bins from the decoded event, not a poll diff. */
   prev_active_bin: number;

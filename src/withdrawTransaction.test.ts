@@ -11,11 +11,11 @@ const pool = new PublicKey(TEST_POOL);
 const baseMint = new PublicKey(TEST_BASE_MINT);
 const quoteMint = new PublicKey(TEST_QUOTE_MINT);
 
-function fixture(bps = 100) {
+function fixture(percent = 100) {
   const wallet = Keypair.generate().publicKey;
   const positionKey = Keypair.generate().publicKey;
   const request: WithdrawRequest = {
-    method: 'withdraw', position_id: positionKey.toBase58(), bps,
+    method: 'withdraw', position_id: positionKey.toBase58(), percent,
   };
   const position: PositionData = {
     position_id: positionKey.toBase58(), pool: pool.toBase58(), owner: wallet.toBase58(),

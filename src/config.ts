@@ -12,10 +12,6 @@ import { DEFAULT_RPC_MAX_CU_PER_SECOND } from './rpcRateLimit.js';
 
 export type SignerKind = 'kms' | 'keypair' | 'file';
 
-/** Jupiter v6 aggregator router (mainnet-beta); the swap-instructions API signs against it. */
-export const DEFAULT_JUPITER_PROGRAM_ID = 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
-export const DEFAULT_JUPITER_BASE_URL = 'https://lite-api.jup.ag/swap/v1';
-
 /**
  * Canonical Jito mainnet-beta tip accounts (docs.jito.wtf). A configured tip
  * account must appear in this list unless the operator replaces the list for
@@ -66,10 +62,6 @@ export interface ExecutorConfig {
   jitoTipAccount: string | null;
   /** Allow-listed Jito tip accounts for the connected cluster. */
   jitoTipAccounts: string[];
-  /** Jupiter Swap API base used by the M5 `pool:null` route (T5.1 decision: raw HTTP). */
-  jupiterBaseUrl: string;
-  /** Top-level program IDs a Jupiter-built swap transaction may call. */
-  jupiterProgramIds: string[];
   swapStreamPath: string;
   /** Opt-in read-only pool-depth sampler (DEPTH_SAMPLE_PATH); null = off. */
   depthSamplePath: string | null;
@@ -180,10 +172,6 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
     jitoTipAccounts: env['JITO_TIP_ACCOUNTS']
       ? [...new Set(splitList(env['JITO_TIP_ACCOUNTS']))].sort()
       : [...DEFAULT_JITO_TIP_ACCOUNTS].sort(),
-    jupiterBaseUrl: optional(env, 'JUPITER_BASE_URL', DEFAULT_JUPITER_BASE_URL),
-    jupiterProgramIds: env['JUPITER_PROGRAM_ALLOWLIST']
-      ? [...new Set(splitList(env['JUPITER_PROGRAM_ALLOWLIST']))].sort()
-      : [DEFAULT_JUPITER_PROGRAM_ID],
     swapStreamPath: required(env, 'SWAP_STREAM_PATH'),
     depthSamplePath: optional(env, 'DEPTH_SAMPLE_PATH') || null,
     depthSampleIntervalS: env['DEPTH_SAMPLE_INTERVAL_S'] ? number(env, 'DEPTH_SAMPLE_INTERVAL_S') : 60,
@@ -213,17 +201,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     throw new ConfigValidationError('SOLANA_RPC_MAX_CU_PER_SECOND must be greater than zero');
   }
   if (config.jitoBlockEngineUrl) httpUrl(config.jitoBlockEngineUrl, 'JITO_BLOCK_ENGINE_URL');
-  httpUrl(config.jupiterBaseUrl, 'JUPITER_BASE_URL');
-  if (config.jupiterProgramIds.length === 0) {
-    throw new ConfigValidationError('JUPITER_PROGRAM_ALLOWLIST must not be empty');
-  }
-  for (const program of config.jupiterProgramIds) {
-    try {
-      new PublicKey(program);
-    } catch {
-      throw new ConfigValidationError('JUPITER_PROGRAM_ALLOWLIST must contain Solana public keys');
-    }
-  }
   if (config.commitment !== 'confirmed' && config.commitment !== 'finalized') {
     throw new ConfigValidationError('SOLANA_COMMITMENT must be confirmed|finalized');
   }
@@ -341,8 +318,6 @@ function policyRelevant(config: ExecutorConfig): string {
     jitoTipLamports: config.jitoTipLamports,
     jitoTipAccount: config.jitoTipAccount,
     jitoTipAccounts: [...config.jitoTipAccounts].sort(),
-    jupiterBaseUrl: config.jupiterBaseUrl,
-    jupiterProgramIds: [...config.jupiterProgramIds].sort(),
     dryRun: config.dryRun,
   });
 }

@@ -54,7 +54,7 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
 
       // The old position must be fully gone; partial stage means reconcile
       // from chain — the test records, never retries.
-      const oldGone = await run.client.request({ method: 'withdraw', position_id: positionId, bps: 1 });
+      const oldGone = await run.client.request({ method: 'withdraw', position_id: positionId, percent: 1 });
       expect(oldGone.ok).toBe(false);
       run.recorder.decision(`old position ${positionId} reported ${oldGone.error} after full refresh`);
 
@@ -68,10 +68,10 @@ describe.skipIf(!live.configured)('refresh bundle', () => {
       // The re-deposited position is owned by this run; close it so the
       // campaign leaves no test-created exposure.
       const close = await run.client.request({
-        method: 'withdraw', position_id: data.position_id!, bps: 100,
+        method: 'withdraw', position_id: data.position_id!, percent: 100,
       });
       run.recorder.exchange(
-        { method: 'withdraw', position_id: data.position_id!, bps: 100 }, close,
+        { method: 'withdraw', position_id: data.position_id!, percent: 100 }, close,
       );
       expect(close.ok).toBe(true);
       expect((close.data as { closed: boolean }).closed).toBe(true);

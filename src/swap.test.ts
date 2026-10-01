@@ -49,8 +49,8 @@ describe('validateSwapRequest', () => {
       .toThrow('valid');
   });
 
-  it('rejects the stand-by aggregator route before any other check', () => {
-    expect(() => validateSwapRequest(request({ pool: null }), MINTS)).toThrow('stand-by');
+  it('rejects pool:null (no aggregator route) before any other check', () => {
+    expect(() => validateSwapRequest(request({ pool: null }), MINTS)).toThrow('no aggregator route');
   });
 
   it('accepts a real allow-listed pair within range', () => {

@@ -162,7 +162,7 @@ describe('M4 withdrawal handler composition', () => {
       .mockResolvedValueOnce(stateFixture())
       .mockResolvedValueOnce(stateFixture('10103000000', '500500000'));
     const request: WithdrawRequest = {
-      method: 'withdraw', position_id: before.position_id, bps: 50,
+      method: 'withdraw', position_id: before.position_id, percent: 50,
     };
     const result = await handlers.withdraw(request);
     expect(result).toMatchObject({
@@ -190,7 +190,7 @@ describe('M4 withdrawal handler composition', () => {
       .mockResolvedValueOnce(stateFixture())
       .mockResolvedValueOnce(stateFixture('10203000000', '530500000'));
     const request: WithdrawRequest = {
-      method: 'withdraw', position_id: before.position_id, bps: 100,
+      method: 'withdraw', position_id: before.position_id, percent: 100,
     };
     const result = await handlers.withdraw(request);
     expect(result).toMatchObject({
@@ -211,7 +211,7 @@ describe('M4 withdrawal handler composition', () => {
     reads.getState
       .mockResolvedValueOnce(stateFixture())
       .mockResolvedValueOnce(stateFixture('10203000000', '530500000'));
-    await handlers.withdraw({ method: 'withdraw', position_id: before.position_id, bps: 100 });
+    await handlers.withdraw({ method: 'withdraw', position_id: before.position_id, percent: 100 });
     const call = execute.mock.calls[0] as unknown as [unknown, { commitment: string }];
     expect(call[1]).toMatchObject({ commitment: 'finalized' });
   });
@@ -225,7 +225,7 @@ describe('M4 withdrawal handler composition', () => {
       .mockResolvedValueOnce(stateFixture())
       .mockResolvedValueOnce(stateFixture('10203000000', '530500000'));
     const result = await handlers.withdraw({
-      method: 'withdraw', position_id: before.position_id, bps: 100,
+      method: 'withdraw', position_id: before.position_id, percent: 100,
     });
     expect(result).toMatchObject({
       ok: false,
@@ -240,7 +240,7 @@ describe('M4 withdrawal handler composition', () => {
     const { handlers, reads, execute } = fixture();
     reads.getPosition.mockRejectedValueOnce(new UnknownPositionError('foreign'));
     const result = await handlers.withdraw({
-      method: 'withdraw', position_id: Keypair.generate().publicKey.toBase58(), bps: 100,
+      method: 'withdraw', position_id: Keypair.generate().publicKey.toBase58(), percent: 100,
     });
     expect(result.error).toBe('unknown_position');
     expect(execute).not.toHaveBeenCalled();

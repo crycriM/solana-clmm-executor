@@ -12,12 +12,11 @@ export interface NormalizedWithdrawal {
 }
 
 /**
- * The wire protocol intentionally uses an integer percent despite the legacy
- * field name `bps`: 100 means 100%, not 100 bps.  Keep conversion isolated so
- * no SDK call can accidentally remove one percent on a requested full exit.
+ * The wire carries an integer percent (1..100, enforced by `parseRequest`);
+ * the DLMM program takes basis points. Keep the conversion isolated so no SDK
+ * call can accidentally remove one percent on a requested full exit.
  */
-export function normalizeWithdrawal(request: Pick<WithdrawRequest, 'bps'>): NormalizedWithdrawal {
-  const percent = Math.min(100, Math.max(1, request.bps));
+export function normalizeWithdrawal({ percent }: Pick<WithdrawRequest, 'percent'>): NormalizedWithdrawal {
   return {
     fraction: percent / 100,
     dlmmBps: percent * 100,

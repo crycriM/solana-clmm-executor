@@ -68,7 +68,6 @@ export type PolicyRule =
   | 'active_bin_slippage_cap'
   | 'native_deposit_binding'
   | 'native_withdrawal_binding'
-  | 'jupiter_swap_binding'
   | 'meteora_swap_binding'
   | 'jito_tip_binding'
   | 'priority_fee_cap';
@@ -138,20 +137,6 @@ export interface PolicyInput {
     bpsToRemove: number;
     claimAndClose: boolean;
   };
-  /**
-   * Expected Jupiter v6 route instruction; policy decodes the final message
-   * and enforces a closed world for every other top-level instruction.
-   * `sourceTokenAccount`/`destinationTokenAccount` are null when the side is
-   * wrapped SOL, whose account is created and destroyed inside the tx.
-   */
-  jupiterSwap?: {
-    routerProgram: string | PublicKey;
-    sourceTokenAccount: string | PublicKey | null;
-    destinationTokenAccount: string | PublicKey | null;
-    tokenProgram: string | PublicKey;
-    amountInRaw: bigint;
-    minOutRaw: bigint;
-  };
   /** Expected native Meteora `swap2` fields for the direct pool route (T5.1). */
   meteoraSwap?: {
     pool: string | PublicKey;
@@ -217,13 +202,11 @@ interface DecodedInstruction {
 export class TransactionPolicy {
   private spentLamports = 0;
   private readonly programs: Set<string>;
-  private readonly jupiterPrograms: Set<string>;
   private readonly wallet: string;
   private readonly validatedHashes: string[] = [];
 
   constructor(private readonly config: ExecutorConfig, wallet: PublicKey) {
     this.wallet = wallet.toBase58();
-    this.jupiterPrograms = new Set(config.jupiterProgramIds);
     this.programs = new Set([
       LBCLMM_PROGRAM_IDS['mainnet-beta'],
       SystemProgram.programId.toBase58(),
@@ -307,9 +290,6 @@ export class TransactionPolicy {
     allowedWritable: Set<string>,
     input: PolicyInput,
   ): string {
-    if (input.jupiterSwap) {
-      reject('jupiter_swap_binding', 'Jupiter swap requires a versioned transaction');
-    }
     if (!tx.feePayer?.toBase58 || tx.feePayer.toBase58() !== this.wallet) {
       reject('fee_payer', 'wallet must be fee payer');
     }
@@ -375,28 +355,10 @@ export class TransactionPolicy {
         accountKeys,
       };
     });
-    if (input.jupiterSwap) {
-      const ephemeral = this.validateJupiterSwapBinding(decoded, input.jupiterSwap);
-      for (const account of ephemeral) allowedWritable.add(account);
-    }
     const computeBudget: ComputeBudgetInstructionData[] = [];
     const decodedInstructions: DecodedInstruction[] = [];
     for (const instruction of decoded) {
-      if (input.jupiterSwap && this.jupiterPrograms.has(instruction.program.toBase58())) {
-        // The router's own account vector is Jupiter's domain (route pools are
-        // writable there); only the bound prefix and signer rule apply.
-        for (const account of instruction.accountKeys) {
-          if (account.isSigner && account.key.toBase58() !== this.wallet) {
-            reject('only_wallet_signer', 'a non-wallet account was marked signer');
-          }
-        }
-      } else {
-        this.validateInstruction(
-          instruction.program,
-          instruction.accountKeys,
-          allowedWritable,
-        );
-      }
+      this.validateInstruction(instruction.program, instruction.accountKeys, allowedWritable);
       decodedInstructions.push({
         program: instruction.program,
         accounts: instruction.accounts,
@@ -409,112 +371,6 @@ export class TransactionPolicy {
     this.validateMeteoraSwapBinding(decodedInstructions, input.meteoraSwap);
     this.validatePriorityFee(computeBudget);
     return Buffer.from(message.serialize()).toString('hex');
-  }
-
-  /**
-   * Enforce the Jupiter swap closed world: exactly one router instruction with
-   * the bound amount, minimum output, and wallet accounts; every other
-   * top-level instruction must be a standard-program setup/teardown step that
-   * can only touch the wallet, the bound token accounts, or accounts created
-   * inside this same transaction. Returns the transaction-local ephemeral
-   * accounts (wSOL wrap/unwrap) so callers can widen the writable allow-list.
-   * ##### NOT USED #####
-   */
-  private validateJupiterSwapBinding(
-    decoded: {
-      program: PublicKey;
-      accounts: PublicKey[];
-      data: Buffer;
-      accountKeys: { key: PublicKey; isWritable: boolean }[];
-    }[],
-    expected: NonNullable<PolicyInput['jupiterSwap']>,
-  ): Set<string> {
-    const rejectSwap = (detail: string): never =>
-      reject('jupiter_swap_binding', detail);
-    const asKey = (value: string | PublicKey): string =>
-      typeof value === 'string' ? value : value.toBase58();
-    const router = decoded.filter((ix) => this.jupiterPrograms.has(ix.program.toBase58()));
-    if (router.length !== 1) rejectSwap('expected exactly one Jupiter router instruction');
-    const route = router[0]!;
-    if (route.program.toBase58() !== asKey(expected.routerProgram)) {
-      rejectSwap('router program does not match the configured Jupiter program');
-    }
-    // v6 route layout: [0] route type, [1..9] amount u64 LE, [9..17] min-out u64 LE.
-    if (route.data.length < 17 || ![0, 1, 2].includes(route.data[0]!)) {
-      rejectSwap('router instruction payload is malformed');
-    }
-    if (route.data.readBigUInt64LE(1) !== expected.amountInRaw) {
-      rejectSwap('router amount-in does not match the requested swap');
-    }
-    if (route.data.readBigUInt64LE(9) !== expected.minOutRaw) {
-      rejectSwap('router minimum output does not match the quoted slippage bound');
-    }
-    if (route.accounts.length < 4) rejectSwap('router instruction accounts are truncated');
-    const tokenProgram = new PublicKey(asKey(expected.tokenProgram));
-    if (!route.accounts[0]!.equals(tokenProgram) ||
-        (!tokenProgram.equals(TOKEN_PROGRAM_ID) && !tokenProgram.equals(TOKEN_2022_PROGRAM_ID)) ||
-        route.accounts[1]!.toBase58() !== this.wallet) {
-      rejectSwap('router fixed accounts do not match the validated request');
-    }
-    if (expected.sourceTokenAccount &&
-        route.accounts[2]!.toBase58() !== asKey(expected.sourceTokenAccount)) {
-      rejectSwap('router source token account is not the wallet account for the input mint');
-    }
-    if (expected.destinationTokenAccount &&
-        route.accounts[3]!.toBase58() !== asKey(expected.destinationTokenAccount)) {
-      rejectSwap('router destination token account is not the wallet account for the output mint');
-    }
-
-    const ephemeral = new Set<string>();
-    for (const ix of decoded) {
-      if (ix.program.equals(SystemProgram.programId)) {
-        if (ix.data.length < 4) rejectSwap('system instruction payload is malformed');
-        const type = ix.data.readUInt32LE(0);
-        if (type === 0 && ix.accounts.length >= 2) {
-          ephemeral.add(ix.accounts[1]!.toBase58());
-        } else if (type === 2 && ix.accounts.length >= 2) {
-          if (!this.ephemeralOrBound(ix.accounts[1]!.toBase58(), ephemeral, expected)) {
-            rejectSwap('system transfer may only fund a transaction-local account');
-          }
-        } else {
-          rejectSwap('unsupported system instruction in a Jupiter swap');
-        }
-        continue;
-      }
-      if (ix.program.equals(ASSOCIATED_TOKEN_PROGRAM_ID)) {
-        if (ix.data.length !== 1 || ix.data[0] !== 1 || ix.accounts.length < 6 ||
-            ix.accounts[0]!.toBase58() !== this.wallet ||
-            ix.accounts[2]!.toBase58() !== this.wallet) {
-          rejectSwap('associated-token instruction must be an idempotent wallet creation');
-        }
-        continue;
-      }
-      if (ix.program.equals(TOKEN_PROGRAM_ID) || ix.program.equals(TOKEN_2022_PROGRAM_ID)) {
-        // Wrap/sync/close steps may only mutate the bound wallet accounts or
-        // accounts created inside this transaction.
-        for (const account of ix.accountKeys) {
-          if (account.isWritable &&
-              !this.ephemeralOrBound(account.key.toBase58(), ephemeral, expected)) {
-            rejectSwap('token program instruction touches an unbound account');
-          }
-        }
-      }
-    }
-    return ephemeral;
-  }
-
-  private ephemeralOrBound(
-    key: string,
-    ephemeral: Set<string>,
-    expected: NonNullable<PolicyInput['jupiterSwap']>,
-  ): boolean {
-    if (key === this.wallet || ephemeral.has(key)) return true;
-    const asKey = (value: string | PublicKey): string =>
-      typeof value === 'string' ? value : value.toBase58();
-    return (expected.sourceTokenAccount !== null &&
-        asKey(expected.sourceTokenAccount) === key) ||
-      (expected.destinationTokenAccount !== null &&
-        asKey(expected.destinationTokenAccount) === key);
   }
 
   private validateSigners(keys: PublicKey[]): void {

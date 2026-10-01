@@ -18,6 +18,9 @@ function positive(value: unknown): boolean {
 function bps(value: unknown): boolean {
   return Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 10000;
 }
+function percent(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) <= 100;
+}
 function binId(value: unknown): boolean {
   return Number.isSafeInteger(value) && Number(value) >= -2_147_483_648 && Number(value) <= 2_147_483_647;
 }
@@ -67,7 +70,7 @@ export function parseRequest(value: unknown, mintAllowlist: readonly string[]): 
         ['Spot', 'Curve', 'BidAsk'].includes(String(value.strategy_type));
       break;
     case 'withdraw':
-      valid = text(value.position_id) && Number.isSafeInteger(value.bps);
+      valid = text(value.position_id) && percent(value.percent);
       break;
     case 'quote_swap':
       valid = swap(value, mintAllowlist);

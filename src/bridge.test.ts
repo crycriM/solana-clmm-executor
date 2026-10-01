@@ -132,6 +132,25 @@ describe('stdio loop', () => {
     expect(records.map((r) => r.req_seq)).toEqual([1, 2, 3]);
   });
 
+  it('echoes a safe request id on ok and bad_request, and drops anything else', async () => {
+    const { responses } = await exchange([
+      { ...requests.get_position, id: 'x1' },
+      { method: 'get_position', id: 'x2' },
+      { ...requests.get_position, id: 'a'.repeat(41) },
+      { ...requests.get_position, id: 'has space' },
+      { ...requests.get_position, id: 42 },
+      '{"id":"x3",',
+    ]);
+    expect(responses.map((r) => [r.ok, r.id])).toEqual([
+      [true, 'x1'],
+      [false, 'x2'],
+      [true, undefined],
+      [true, undefined],
+      [true, undefined],
+      [false, undefined],
+    ]);
+  });
+
   it.each([
     '{',
     '',
@@ -156,6 +175,12 @@ describe('stdio loop', () => {
     { ...requests.swap, in_mint: 'base' },
     { ...requests.swap, amount: -1 },
     { ...requests.swap, max_slippage_bps: 10001 },
+    // Percent, not basis points: out of range is rejected, never clamped; the
+    // pre-rename `bps` field is rejected rather than silently read.
+    { ...requests.withdraw, percent: 0 },
+    { ...requests.withdraw, percent: 101 },
+    { ...requests.withdraw, percent: 50.5 },
+    { method: 'withdraw', position_id: 'stub_position_001', bps: 100 },
     { ...requests.refresh_bundle, deposit_spec: null },
     {
       ...requests.refresh_bundle,
@@ -235,7 +260,7 @@ describe('stdio loop', () => {
     const withdrawal = await handlers.withdraw({
       method: 'withdraw',
       position_id: 'position',
-      bps: 100,
+      percent: 100,
     });
     const response: Awaited<ReturnType<ExecHandlers['refresh_bundle']>> = {
       ...withdrawal,

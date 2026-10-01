@@ -11,7 +11,8 @@ compiled production code against them.
 `swap`, and `refresh_bundle`. `responses/<verb>.ok.json` is the matching stub
 response with only `data.stub` removed. `responses/<verb>.error.json` records
 the first error slice: `bad_request` after removing that verb's required
-identifier.
+identifier. The `get_state` pair also carries an `id`, which pins the echo on
+both ok and `bad_request` replies.
 
 These are synthetic dry-run examples: signatures, slots, amounts, fees, and the
 wallet/position identifiers are not evidence of chain execution. The stub does

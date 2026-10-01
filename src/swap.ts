@@ -38,14 +38,13 @@ export function validateSwapRequest(
   request: SwapRequest,
   mintAllowlist: readonly string[],
 ): asserts request is SwapRequest & { pool: string } {
-  // The Jupiter aggregator route is on stand-by: its router binding was never
-  // verified against a real route, and the price edge does not justify signing
-  // against an unverified instruction layout. Re-enable only with a captured
-  // mainnet route fixture behind the policy binding.
+  // No aggregator route here: the executor signs only direct DLMM swaps. An
+  // aggregator exit belongs on the HB Gateway Jupiter connector (see status.md,
+  // 2026-10-01 Jupiter removal), not in this signer.
   if (request.pool === null) {
     throw new SwapValidationError(
       'bad_request',
-      'swap requires a pool: the aggregator route is on stand-by',
+      'swap requires a pool: the executor has no aggregator route',
     );
   }
   validateSwapTerms(request, mintAllowlist);
@@ -247,7 +246,7 @@ export function buildSwapData(
   realized: RealizedSwap,
   inDecimals: number,
   outDecimals: number,
-  route: 'jupiter' | 'meteora',
+  route: 'meteora',
 ): SwapData {
   const amountIn = new Decimal(realized.amountInRaw.toString()).div(new Decimal(10).pow(inDecimals));
   const amountOut = new Decimal(realized.amountOutRaw.toString())

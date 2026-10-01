@@ -56,7 +56,7 @@ describe('receipt envelope', () => {
     const raw = new StdioClient(requireBuiltBridge(), bad.env);
     raw.start();
     try {
-      const response = await raw.request({ method: 'withdraw', bps: 100 } as never);
+      const response = await raw.request({ method: 'withdraw', percent: 100 } as never);
       expect(response.ok).toBe(false);
       expectReceipts(response);
       expect(response.transactions).toHaveLength(0);

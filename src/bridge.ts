@@ -29,6 +29,17 @@ import { PublicKey } from '@solana/web3.js';
 /** Handlers can mark state unusable; the caller gets an error before exit. */
 export class UnrecoverableError extends Error {}
 
+// Echoing an id reflects caller input; anything not plainly safe is dropped.
+// Short and dash/underscore-only, so redaction can never rewrite it.
+const ECHO_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+
+/** Correlation id to echo, read before validation so bad_request replies carry it too. */
+function echoId(parsed: unknown): string | undefined {
+  if (parsed === null || typeof parsed !== 'object' || !('id' in parsed)) return undefined;
+  const { id } = parsed as { id: unknown };
+  return typeof id === 'string' && ECHO_ID_RE.test(id) ? id : undefined;
+}
+
 function writeResponse(output: Writable, response: ExecResponse): Promise<void> {
   const line = JSON.stringify(redact(response as unknown as Json)) + '\n';
   return new Promise((resolve, reject) => {
@@ -83,6 +94,7 @@ export async function runBridge({
       let response: ExecResponse;
       let fatal = false;
       let handlerRan = false;
+      let id: string | undefined;
       try {
         let parsed: unknown;
         try {
@@ -91,6 +103,7 @@ export async function runBridge({
           throw new BadRequest('Invalid JSON request');
         }
         request = parsed as Json;
+        id = echoId(parsed);
         if (
           parsed !== null &&
           typeof parsed === 'object' &&
@@ -120,6 +133,9 @@ export async function runBridge({
           reportError(fatal ? 'Executor state is unusable' : 'Handler failed');
         }
       }
+      // The audit line records exactly the envelope that goes on the wire.
+      const withId = (r: ExecResponse): ExecResponse => (id === undefined ? r : { ...r, id });
+      response = withId(response);
       const responded = Date.now();
       const isReadVerb = method === 'get_state' || method === 'get_position';
       const readAudit =
@@ -188,7 +204,7 @@ export async function runBridge({
           });
         }
       } catch {
-        response = errorResponse('internal_error', 'Executor audit log unavailable');
+        response = withId(errorResponse('internal_error', 'Executor audit log unavailable'));
         fatal = true;
         reportError('Executor audit log unavailable');
       }
@@ -290,7 +306,7 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
         ? 'test fixture: injected handlers; no RPC, simulation, or signing'
         : config.dryRun
           ? 'M3: live reads + decoded swap stream; write verbs remain gated; no signer loaded'
-          : 'M5: policy-bound deposit/withdraw, direct-pool swap (aggregator route on stand-by), and refresh_bundle (Jito bundle when enabled, else sequential) wired',
+          : 'M5: policy-bound deposit/withdraw, direct-pool swap (no aggregator route), and refresh_bundle (Jito bundle when enabled, else sequential) wired',
     });
     const stream = injectedHandlers ? undefined : await startSwapStream(config, reads!, log);
     const depth = injectedHandlers ? undefined : startDepthSampler(config, wallet, log);

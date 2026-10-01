@@ -1,9 +1,8 @@
 /**
  * The only transaction execution path for M4/M5 writes.
  *
- * Verb handlers build a transaction from trusted SDK calls (or, for Jupiter
- * swaps, from builder-assembled instructions), supply the builder's expected
- * accounts/amounts to TransactionPolicy, and hand it here. This module owns
+ * Verb handlers build a transaction from trusted SDK calls, supply the
+ * builder's expected accounts/amounts to TransactionPolicy, and hand it here. This module owns
  * the irreversible sequence: blockhash → policy → unsigned simulation →
  * policy reservation → sign → submit → confirm → receipt.
  */
@@ -303,44 +302,6 @@ export async function executeLegacyTransaction(
     (signatureBytes) => {
       tx.addSignature(signer.publicKey, signatureBytes);
       return tx.serialize();
-    },
-  );
-  return { ...settled, policy: decision, blockhash: blockhash.blockhash };
-}
-
-/**
- * Execute one builder-assembled v0 transaction (the Jupiter swap path).
- * The fresh blockhash is written into the message before policy sees it, so
- * the validated message hash is the exact bytes that get signed.
- */
-export async function executeVersionedTransaction(
-  tx: VersionedTransaction,
-  options: ExecuteLegacyOptions,
-): Promise<ExecutedTransaction> {
-  const { connection, signer, policy, policyInput, commitment } = options;
-  const blockhash = await connection.getLatestBlockhash(commitment);
-  tx.message.recentBlockhash = blockhash.blockhash;
-  let decision: PolicyDecision;
-  try {
-    decision = policy.validate(tx, policyInput);
-  } catch (error) {
-    if (error instanceof PolicyRejected) {
-      error.blockhash = blockhash.blockhash;
-    }
-    throw error;
-  }
-  const simulation = await connection.simulateTransaction(tx);
-  if (simulation.value.err !== null) {
-    throw new SimulationFailed(simulation.value.logs ?? [], decision, blockhash.blockhash);
-  }
-  const settled = await admitAndSettle(
-    options,
-    decision,
-    blockhash,
-    tx.message.serialize(),
-    (signatureBytes) => {
-      tx.addSignature(signer.publicKey, signatureBytes);
-      return Buffer.from(tx.serialize());
     },
   );
   return { ...settled, policy: decision, blockhash: blockhash.blockhash };

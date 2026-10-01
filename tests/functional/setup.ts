@@ -82,8 +82,8 @@ function liveM4Configuration(): { configured: boolean; reason: string } {
 }
 
 /**
- * M5 live campaign gate. The verbs are implemented (Jupiter swap + sequential
- * refresh_bundle); this extra switch keeps the write campaign opt-in so a
+ * M5 live campaign gate. The verbs are implemented (direct-pool swap +
+ * sequential refresh_bundle); this extra switch keeps the write campaign opt-in so a
  * default `RUN_LIVE=1` read pass can never reach a signing path by accident.
  */
 export function liveM5RunnerInfo(): { configured: boolean; reason: string } {

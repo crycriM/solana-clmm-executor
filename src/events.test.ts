@@ -190,5 +190,12 @@ describe('DLMM event decoder', () => {
       fixture.pool,
       OTHER_POOL,
     ]);
+    // Chain physics: selling X (swapForY) can only move the bin down. A row
+    // that violates this once survived the 2e182bf mapping fix unnoticed.
+    for (const event of events as DecodedSwapEvent[]) {
+      if (event.startBinId !== event.endBinId) {
+        expect(event.swapForY).toBe(event.endBinId < event.startBinId);
+      }
+    }
   });
 });

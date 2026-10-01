@@ -59,8 +59,8 @@ describe('handler write surfaces', () => {
     expect(data.max_debit_amount).toBe(150);
   });
 
-  it('withdraw at 100 bps closes the position and reports what came back', async () => {
-    const response = await client.request({ method: 'withdraw', position_id: 'p-full', bps: 100 });
+  it('withdraw at 100% closes the position and reports what came back', async () => {
+    const response = await client.request({ method: 'withdraw', position_id: 'p-full', percent: 100 });
     const data = response.data as WithdrawData;
     expect(response.ok).toBe(true);
     expect(data.fraction).toBe(1);
@@ -68,8 +68,8 @@ describe('handler write surfaces', () => {
     expect(data.amounts_returned.base_raw).toMatch(/^\d+$/);
   });
 
-  it('withdraw below 100 bps leaves the position open', async () => {
-    const response = await client.request({ method: 'withdraw', position_id: 'p-partial', bps: 50 });
+  it('withdraw below 100% leaves the position open', async () => {
+    const response = await client.request({ method: 'withdraw', position_id: 'p-partial', percent: 50 });
     const data = response.data as WithdrawData;
     expect(data.fraction).toBe(0.5);
     expect(data.closed).toBe(false);

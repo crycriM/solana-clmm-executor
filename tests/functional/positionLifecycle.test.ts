@@ -119,7 +119,7 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
       expect(addedTotal).toBeGreaterThan(realizedTotal);
       run.recorder.setPosition(positionId!, addedReadback.data);
 
-      const partialRequest = { method: 'withdraw' as const, position_id: positionId!, bps: 50 };
+      const partialRequest = { method: 'withdraw' as const, position_id: positionId!, percent: 50 };
       const partial = await run.client.request(partialRequest);
       submissionAmbiguous ||= partial.error === 'submission_ambiguous';
       run.recorder.exchange(partialRequest, partial);
@@ -127,12 +127,12 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
       expect((partial.data as WithdrawData).closed).toBe(false);
       run.recorder.cleanupOperation(`withdraw 50% from ${positionId}`);
 
-      const full = await run.client.request({ method: 'withdraw', position_id: positionId!, bps: 100 });
+      const full = await run.client.request({ method: 'withdraw', position_id: positionId!, percent: 100 });
       submissionAmbiguous ||= full.error === 'submission_ambiguous';
       expect(full.ok).toBe(true);
       expect(full.data ? (full.data as WithdrawData).closed : false).toBe(true);
       expect(full.transactions[0]?.status).toBe('finalized');
-      run.recorder.exchange({ method: 'withdraw', position_id: positionId!, bps: 100 }, full);
+      run.recorder.exchange({ method: 'withdraw', position_id: positionId!, percent: 100 }, full);
       run.recorder.cleanupOperation(`withdraw 100% from ${positionId} (cleanup)`);
       const after = await run.client.request({ method: 'get_state', pool: process.env['LIVE_POOL']! });
       expect(after.ok).toBe(true);
@@ -142,11 +142,11 @@ describe.skipIf(!live.configured)('dust position lifecycle', () => {
     } finally {
       if (status === 'failed' && positionId && !submissionAmbiguous) {
         const cleanup = await run.client.request({
-          method: 'withdraw', position_id: positionId, bps: 100,
+          method: 'withdraw', position_id: positionId, percent: 100,
         }).catch(() => null);
         if (cleanup?.ok && (cleanup.data as WithdrawData | null)?.closed) {
           run.recorder.exchange(
-            { method: 'withdraw', position_id: positionId, bps: 100 },
+            { method: 'withdraw', position_id: positionId, percent: 100 },
             cleanup,
           );
           run.recorder.cleanupOperation(`emergency cleanup of ${positionId}`);

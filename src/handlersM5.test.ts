@@ -159,7 +159,6 @@ function track<A extends unknown[]>(
 
 interface FixtureOptions {
   execute?: WriteDependencies['execute'];
-  executeVersioned?: WriteDependencies['executeVersioned'];
   jitoEnabled?: boolean;
   realizedOutRaw?: string;
   bundleSubmit?: WriteDependencies['bundleSubmit'];
@@ -181,10 +180,6 @@ function fixture(options: FixtureOptions = {}) {
     const plain = legacySignatures.filter((signature) => signature !== 'swap-sig');
     return legacyExecuted(plain[legacyCall - 1] ?? `legacy-${legacyCall}`);
   }), validatedHashes);
-  const executeVersioned = track(
-    options.executeVersioned ?? (async () => swapExecuted(wallet, '1000000000')),
-    validatedHashes,
-  );
   const reads = {
     getState: vi.fn(async () => stateFixture()),
     getWritablePoolMetadata: vi.fn(async () => ({
@@ -228,11 +223,10 @@ function fixture(options: FixtureOptions = {}) {
     config,
     jito,
     execute,
-    executeVersioned,
     ...(options.bundleSubmit ? { bundleSubmit: options.bundleSubmit } : {}),
   });
   return {
-    handlers, reads, execute, executeVersioned, jito, wallet, position, validatedHashes,
+    handlers, reads, execute, jito, wallet, position, validatedHashes,
   };
 }
 
@@ -263,7 +257,7 @@ function withLandedWithdraw(reads: ReturnType<typeof fixture>['reads'], wallet: 
 
 describe('M5 swap handler', () => {
   it('settles SwapData from the confirmed receipt, not the quote', async () => {
-    const { handlers, execute, executeVersioned } = fixture();
+    const { handlers, execute } = fixture();
     const result = await handlers.swap(swapRequest());
     expect(result).toMatchObject({
       ok: true,
@@ -277,7 +271,6 @@ describe('M5 swap handler', () => {
       transactions: [{ signature: 'swap-sig', fee_lamports: 6_000 }],
     });
     expect(execute).toHaveBeenCalledOnce();
-    expect(executeVersioned).not.toHaveBeenCalled();
     expect(handlers.writeAudit()).toMatchObject({
       policyDecision: 'allowed', messageHashes: ['b'.repeat(64)], simulationOk: true,
     });
@@ -300,12 +293,11 @@ describe('M5 swap handler', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('rejects the stand-by aggregator route before any submission', async () => {
-    const { handlers, execute, executeVersioned } = fixture();
+  it('rejects pool:null (no aggregator route) before any submission', async () => {
+    const { handlers, execute } = fixture();
     const result = await handlers.swap(swapRequest({ pool: null }));
     expect(result).toMatchObject({ ok: false, error: 'bad_request' });
     expect(execute).not.toHaveBeenCalled();
-    expect(executeVersioned).not.toHaveBeenCalled();
   });
 
   it('never submits a partially-acceptable route: a loose bound fails before execution', async () => {
@@ -377,7 +369,7 @@ describe('M5 swap handler', () => {
 
 describe('M5 sequential refresh_bundle', () => {
   it('withdraws, swaps, and re-deposits both sides with one receipt per tx in order', async () => {
-    const { handlers, reads, wallet, position, execute, executeVersioned } = fixture();
+    const { handlers, reads, wallet, position, execute } = fixture();
     withLandedWithdraw(reads, wallet, position);
     const result = await handlers.refresh_bundle(refreshRequest(position.toBase58()));
     expect(result.ok).toBe(true);
@@ -399,7 +391,6 @@ describe('M5 sequential refresh_bundle', () => {
     expect(new Set(data.position_ids).size).toBe(2);
     expect(data.position_id).toBe(data.position_ids![0]);
     expect(execute).toHaveBeenCalledTimes(4);
-    expect(executeVersioned).not.toHaveBeenCalled();
   });
 
   it('audits one validated message hash per leg, in signing order', async () => {
@@ -415,7 +406,7 @@ describe('M5 sequential refresh_bundle', () => {
   });
 
   it('omits the swap leg and its data when swap_spec is null', async () => {
-    const { handlers, reads, wallet, position, executeVersioned } = fixture();
+    const { handlers, reads, wallet, position } = fixture();
     withLandedWithdraw(reads, wallet, position);
     const result = await handlers.refresh_bundle(
       refreshRequest(position.toBase58(), { swap_spec: null }),
@@ -424,7 +415,6 @@ describe('M5 sequential refresh_bundle', () => {
     expect(result.tx_signatures).toEqual(['withdraw-sig', 'deposit-bid-sig', 'deposit-ask-sig']);
     expect((result.data as RefreshBundleData).swap).toBeUndefined();
     expect(reads.getSwapPoolReader).not.toHaveBeenCalled();
-    expect(executeVersioned).not.toHaveBeenCalled();
   });
 
   it('reports a pre-mutation withdraw failure without a stage (no state change claimed)', async () => {
@@ -551,7 +541,6 @@ describe('M5 direct DLMM pool swap', () => {
       tx_signatures: ['direct-swap-sig'],
     });
     expect(f.reads.getSwapPoolReader).toHaveBeenCalledWith(TEST_POOL);
-    expect(f.executeVersioned).not.toHaveBeenCalled();
   });
 
   it('keeps symbolic mint rejection ahead of any pool read', async () => {
@@ -638,7 +627,6 @@ describe('M5 Jito bundle refresh', () => {
     expect(tipIxes[0]!.data.readBigUInt64LE(4)).toBe(1_000n);
     // No individual submissions: the sequential executors were never used.
     expect(fixtureRef.execute).not.toHaveBeenCalled();
-    expect(fixtureRef.executeVersioned).not.toHaveBeenCalled();
     const data = result.data as RefreshBundleData;
     expect(data).toMatchObject({
       stage: 'deposited',
