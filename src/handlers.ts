@@ -1240,7 +1240,10 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
           ok: false,
           error: swapped.error ?? 'internal_error',
           data: {
-            stage: 'withdrew',
+            // A confirmed swap that failed its post-checks carries its receipt:
+            // it landed. Ambiguous stays at the proven lower bound.
+            stage: swapped.error !== 'submission_ambiguous' && swapped.transactions.length > 0
+              ? 'swapped' : 'withdrew',
             detail: legDetail(swapped),
             fees_claimed: feesClaimed,
             amounts_returned: amountsReturned,

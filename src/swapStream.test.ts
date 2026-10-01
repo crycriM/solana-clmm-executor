@@ -417,6 +417,27 @@ describe('swap stream sink', () => {
     await h.stream.close();
   });
 
+  it('fetches a transaction whose logs were truncated before the swap line', async () => {
+    const h = harness();
+    h.deps.logs.set('sig-truncated', {
+      slot: 301234571,
+      blockTime: 1756900011,
+      logs: ['Program JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4 invoke [1]', 'Log truncated'],
+      eventInstructions: [eventCpiSwap({ startBinId: 7, endBinId: 9 })],
+    });
+    const rows = await h.stream.handleNotification(
+      {
+        err: null,
+        logs: ['Program JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4 invoke [1]', 'Log truncated'],
+        signature: 'sig-truncated',
+      },
+      301234571,
+    );
+    expect(rows.map((row) => [row.tx_signature, row.prev_active_bin, row.new_active_bin]))
+      .toEqual([['sig-truncated', 7, 9]]);
+    await h.stream.close();
+  });
+
   it('backfills a pool-scoped notification after transient transaction-read exhaustion', async () => {
     let attempts = 0;
     const cpi = {

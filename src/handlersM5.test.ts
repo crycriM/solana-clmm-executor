@@ -393,6 +393,15 @@ describe('M5 sequential refresh_bundle', () => {
     expect(execute).toHaveBeenCalledTimes(4);
   });
 
+  it('reports stage swapped when the swap leg landed but broke its minimum', async () => {
+    const { handlers, reads, wallet, position } = fixture({ realizedOutRaw: '990000000' });
+    withLandedWithdraw(reads, wallet, position);
+    const result = await handlers.refresh_bundle(refreshRequest(position.toBase58()));
+    expect(result).toMatchObject({ ok: false, error: 'slippage_exceeded' });
+    expect((result.data as RefreshBundleData).stage).toBe('swapped');
+    expect(result.tx_signatures).toEqual(['withdraw-sig', 'swap-sig']);
+  });
+
   it('audits one validated message hash per leg, in signing order', async () => {
     const { handlers, reads, wallet, position } = fixture();
     withLandedWithdraw(reads, wallet, position);

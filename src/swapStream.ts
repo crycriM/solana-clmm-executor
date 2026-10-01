@@ -413,7 +413,10 @@ export class SwapStream {
     // Current Meteora uses Anchor event-CPI, so the event is an inner
     // instruction rather than a `Program data:` log. Fetch only transactions
     // whose logs identify a swap; this avoids one RPC read for every DLMM call.
-    if (affected.size === 0 && logs.some((line) => line.includes('Instruction: Swap'))) {
+    // The runtime cuts logs past its byte limit, which can drop the swap line
+    // of a long aggregator route: a truncated log must be fetched too.
+    if (affected.size === 0 &&
+        logs.some((line) => line.includes('Instruction: Swap') || line === 'Log truncated')) {
       let tx: Awaited<ReturnType<typeof this.logsOf>> = null;
       try {
         tx = await withRetry(async () => {

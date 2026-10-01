@@ -685,59 +685,54 @@ export class MeteoraReads {
       throw new UnknownPositionError('Position does not exist or is not owned by the wallet');
     }
 
-    try {
-      return await this.rpc(async (endpoint) => {
-        const poolAddress = discovered.header!.pool.toBase58();
-        const entry = await this.pool(endpoint, poolAddress);
-        const pool = this.reader(entry, endpoint);
-        const [position, active, slot] = await Promise.all([
-          pool.getPosition(address),
-          pool.getActiveBin(),
-          endpoint.connection.getSlot(),
-        ]);
-        if (!position.positionData.owner.equals(this.wallet)) {
-          throw new UnknownPositionError('Position does not exist or is not owned by the wallet');
-        }
-        const data = position.positionData;
-        const dx = entry.metadata.tokenX.decimals;
-        const dy = entry.metadata.tokenY.decimals;
-        const feeXRaw = bnToRaw(data.feeX);
-        const feeYRaw = bnToRaw(data.feeY);
-        return {
-          position_id: positionId,
-          pool: poolAddress,
-          owner: data.owner.toBase58(),
-          active_bin: active.binId,
-          min_bin_id: data.lowerBinId,
-          max_bin_id: data.upperBinId,
-          bins: data.positionBinData.map((bin) => {
-            const xRaw = rawSdkAmount(bin.positionXAmount);
-            const yRaw = rawSdkAmount(bin.positionYAmount);
-            const liquidity = new Decimal(bin.binLiquidity);
-            return {
-              bin_id: bin.binId,
-              bin_price: Number(bin.pricePerToken),
-              amount_base: decimal(xRaw, dx),
-              amount_quote: decimal(yRaw, dy),
-              amount_base_raw: xRaw,
-              amount_quote_raw: yRaw,
-              liquidity_share: liquidity.isZero()
-                ? 0
-                : new Decimal(bin.positionLiquidity).div(liquidity).toNumber(),
-            };
-          }),
-          claimable_fee_x: bnToDecimal(data.feeX, dx),
-          claimable_fee_y: bnToDecimal(data.feeY, dy),
-          claimable_fee_x_raw: feeXRaw,
-          claimable_fee_y_raw: feeYRaw,
-          total_base: decimal(rawSdkAmount(data.totalXAmount), dx),
-          total_quote: decimal(rawSdkAmount(data.totalYAmount), dy),
-          slot: Math.max(discovered.slot, slot),
-        };
-      });
-    } catch (error) {
-      if (error instanceof UnknownPositionError) throw error;
-      throw error;
-    }
+    return this.rpc(async (endpoint) => {
+      const poolAddress = discovered.header!.pool.toBase58();
+      const entry = await this.pool(endpoint, poolAddress);
+      const pool = this.reader(entry, endpoint);
+      const [position, active, slot] = await Promise.all([
+        pool.getPosition(address),
+        pool.getActiveBin(),
+        endpoint.connection.getSlot(),
+      ]);
+      if (!position.positionData.owner.equals(this.wallet)) {
+        throw new UnknownPositionError('Position does not exist or is not owned by the wallet');
+      }
+      const data = position.positionData;
+      const dx = entry.metadata.tokenX.decimals;
+      const dy = entry.metadata.tokenY.decimals;
+      const feeXRaw = bnToRaw(data.feeX);
+      const feeYRaw = bnToRaw(data.feeY);
+      return {
+        position_id: positionId,
+        pool: poolAddress,
+        owner: data.owner.toBase58(),
+        active_bin: active.binId,
+        min_bin_id: data.lowerBinId,
+        max_bin_id: data.upperBinId,
+        bins: data.positionBinData.map((bin) => {
+          const xRaw = rawSdkAmount(bin.positionXAmount);
+          const yRaw = rawSdkAmount(bin.positionYAmount);
+          const liquidity = new Decimal(bin.binLiquidity);
+          return {
+            bin_id: bin.binId,
+            bin_price: Number(bin.pricePerToken),
+            amount_base: decimal(xRaw, dx),
+            amount_quote: decimal(yRaw, dy),
+            amount_base_raw: xRaw,
+            amount_quote_raw: yRaw,
+            liquidity_share: liquidity.isZero()
+              ? 0
+              : new Decimal(bin.positionLiquidity).div(liquidity).toNumber(),
+          };
+        }),
+        claimable_fee_x: bnToDecimal(data.feeX, dx),
+        claimable_fee_y: bnToDecimal(data.feeY, dy),
+        claimable_fee_x_raw: feeXRaw,
+        claimable_fee_y_raw: feeYRaw,
+        total_base: decimal(rawSdkAmount(data.totalXAmount), dx),
+        total_quote: decimal(rawSdkAmount(data.totalYAmount), dy),
+        slot: Math.max(discovered.slot, slot),
+      };
+    });
   }
 }
