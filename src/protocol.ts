@@ -42,7 +42,9 @@ export interface DepositSingleSidedRequest {
    * Target allocation per bin. The executor normalizes these values to native
    * Meteora weights; sum(amounts) is the maximum token budget. Actual per-bin
    * deposits are approximate and authoritative only after get_position.
-   * bid → QUOTE token, ask → BASE token.
+   * bid → QUOTE token, ask → BASE token. sum(amounts) must be an exact number
+   * of raw token units, else bad_request: quantize per bin (floor to the
+   * token's decimals) before sending, as Keeper._quantized_side does.
    */
   amounts: number[];
   /** Active bin used by the keeper when constructing this absolute ladder. */
