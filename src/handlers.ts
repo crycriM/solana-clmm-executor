@@ -381,7 +381,13 @@ export interface WriteDependencies {
   ) => Promise<ExecutedTransaction>;
   /** Injectable for offline bundle verification; defaults to the real path. */
   bundleSubmit?: (legs: BundleLeg[], dependencies: BundleDependenciesLike) => Promise<BundleOutcome>;
+  /** Pause between post-write readback attempts; injectable so tests stay fast. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** A confirmed receipt can outrun the read node; re-read before calling it ambiguous. */
+const READBACK_ATTEMPTS = 5;
+const READBACK_DELAY_MS = 1_000;
 
 export interface BundleDependenciesLike {
   connection: BundleConnection;
@@ -449,47 +455,12 @@ async function readPositionAfter(reads: WriteReads, positionId: string): Promise
 }
 
 /**
- * The wallet balance delta is the cash-basis withdrawal result. Fee claims are
- * separate response fields, so remove the freshly-read pre-transaction fee
- * entitlement from that delta to report principal returned by the withdrawal.
+ * Principal returned by a withdrawal, from the confirmed receipt's wallet token
+ * deltas minus the freshly-read pre-transaction fee entitlement (fees are a
+ * separate response field). Exact to the transaction: no post-write balance
+ * read can lag it or pick up an unrelated transfer.
  */
-function withdrawalReturned(args: {
-  before: StateData;
-  after: StateData;
-  feesXRaw: string;
-  feesYRaw: string;
-  baseDecimals: number;
-  quoteDecimals: number;
-}): WithdrawData['amounts_returned'] {
-  const { before, after, feesXRaw, feesYRaw, baseDecimals, quoteDecimals } = args;
-  const tokenDelta = (beforeRaw: string, afterRaw: string, feeRaw: string): bigint => {
-    const gross = BigInt(afterRaw) - BigInt(beforeRaw);
-    if (gross < 0n) {
-      throw new Error('withdrawal readback reported a lower wallet token balance');
-    }
-    const principal = gross - BigInt(feeRaw);
-    return principal > 0n ? principal : 0n;
-  };
-  const baseRaw = tokenDelta(
-    before.balances_raw.base,
-    after.balances_raw.base,
-    feesXRaw,
-  );
-  const quoteRaw = tokenDelta(
-    before.balances_raw.quote,
-    after.balances_raw.quote,
-    feesYRaw,
-  );
-  return {
-    base: rawToNumber(baseRaw, baseDecimals),
-    quote: rawToNumber(quoteRaw, quoteDecimals),
-    base_raw: baseRaw.toString(),
-    quote_raw: quoteRaw.toString(),
-  };
-}
-
-/** Bundle-side twin of `withdrawalReturned`: deltas from the receipt meta. */
-function bundleReturned(args: {
+function receiptReturned(args: {
   meta: TransactionMeta;
   wallet: PublicKey;
   tokenXMint: string;
@@ -502,7 +473,7 @@ function bundleReturned(args: {
   const { meta, wallet, feesXRaw, feesYRaw, baseDecimals, quoteDecimals } = args;
   const principal = (mint: string, feeRaw: string): bigint => {
     const gain = walletTokenGain(meta, wallet, mint);
-    if (gain < 0n) throw new Error('bundle withdrawal reported a negative wallet delta');
+    if (gain < 0n) throw new Error('withdrawal receipt reported a negative wallet delta');
     const net = gain - BigInt(feeRaw);
     return net > 0n ? net : 0n;
   };
@@ -750,10 +721,7 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
     const audit = resetWriteAudit();
     try {
       const before = await reads.getPosition(req.position_id);
-      const [pool, walletBefore] = await Promise.all([
-        reads.getWritablePoolMetadata(before.pool),
-        reads.getState(before.pool),
-      ]);
+      const pool = await reads.getWritablePoolMetadata(before.pool);
       const plan = buildWithdrawalTransaction({
         wallet: dependencies.signer.publicKey,
         request: req,
@@ -768,29 +736,34 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
       audit.policyDecision = 'allowed';
       audit.blockhash = executed.blockhash;
       audit.simulationOk = true;
-      let walletAfter: StateData;
-      let after: PositionAfter;
-      try {
-        [walletAfter, after] = await Promise.all([
-          reads.getState(before.pool),
-          readPositionAfter(reads, req.position_id),
-        ]);
-        if (walletAfter.slot < walletBefore.slot ||
-            after.gone !== plan.normalized.shouldClaimAndClose) {
-          throw new Error('withdrawal readback has not reached the confirmed closure state');
+      const sleep = dependencies.sleep ??
+        ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+      let after: PositionAfter | null = null;
+      let problem = 'position readback failed';
+      for (let attempt = 0; attempt < READBACK_ATTEMPTS && after === null; attempt += 1) {
+        if (attempt > 0) await sleep(READBACK_DELAY_MS);
+        try {
+          const read = await readPositionAfter(reads, req.position_id);
+          if (read.gone === plan.normalized.shouldClaimAndClose) after = read;
+          else problem = read.gone ? 'position closed on a partial withdrawal' : 'position still present after close';
+        } catch {
+          problem = 'position readback failed';
         }
-      } catch {
+      }
+      if (after === null) {
         throw new SubmissionAmbiguous(
-          'confirmed withdrawal could not be reconciled from chain state',
+          `confirmed withdrawal could not be reconciled from chain state: ${problem}`,
           executed.receipt.signature,
           executed.receipt,
         );
       }
       let amountsReturned: WithdrawData['amounts_returned'];
       try {
-        amountsReturned = withdrawalReturned({
-          before: walletBefore,
-          after: walletAfter,
+        amountsReturned = receiptReturned({
+          meta: executed.meta,
+          wallet: dependencies.signer.publicKey,
+          tokenXMint: pool.tokenX.mint.toBase58(),
+          tokenYMint: pool.tokenY.mint.toBase58(),
           feesXRaw: before.claimable_fee_x_raw,
           feesYRaw: before.claimable_fee_y_raw,
           baseDecimals: pool.tokenX.decimals,
@@ -1121,7 +1094,7 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
     const withdrawEntry = byLabel.get('withdraw')!;
     let amountsReturned: WithdrawData['amounts_returned'];
     try {
-      amountsReturned = bundleReturned({
+      amountsReturned = receiptReturned({
         meta: withdrawEntry.meta,
         wallet,
         tokenXMint: pool.tokenX.mint.toBase58(),

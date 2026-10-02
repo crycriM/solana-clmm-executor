@@ -20,11 +20,22 @@ function request(): DepositSingleSidedRequest {
   };
 }
 
-function receiptFixture() {
+/** `tokens` adds the wallet's base/quote gains to the receipt's token balances. */
+function receiptFixture(tokens?: { owner: string; base: bigint; quote: bigint }) {
+  const balances = (base: bigint, quote: bigint) => [
+    { accountIndex: 1, mint: baseMint.toBase58(), owner: tokens!.owner, uiTokenAmount: { amount: base.toString() } },
+    { accountIndex: 2, mint: quoteMint.toBase58(), owner: tokens!.owner, uiTokenAmount: { amount: quote.toString() } },
+  ];
   return {
     policy: { messageHash: 'a'.repeat(64), solSpendLamports: 0 },
     blockhash: 'test-blockhash',
-    meta: { fee: 5_000 },
+    meta: {
+      fee: 5_000,
+      ...(tokens === undefined ? {} : {
+        preTokenBalances: balances(10_000_000_000n, 500_000_000n),
+        postTokenBalances: balances(10_000_000_000n + tokens.base, 500_000_000n + tokens.quote),
+      }),
+    },
     receipt: {
       signature: 'confirmed-signature', slot: 42, block_time: 1_756_900_001,
       fee_lamports: 5_000, compute_unit_price: 0, status: 'confirmed' as const,
@@ -67,7 +78,11 @@ function stateFixture(baseRaw = '10000000000', quoteRaw = '500000000') {
   };
 }
 
-function fixture(execute = vi.fn(async () => receiptFixture())) {
+function fixture(custom?: () => Promise<ReturnType<typeof receiptFixture>>) {
+  const wallet = Keypair.generate().publicKey;
+  /** Wallet token gains the default receipt reports; withdrawal tests set them. */
+  const gains = { base: 0n, quote: 0n };
+  const execute = vi.fn(custom ?? (async () => receiptFixture({ owner: wallet.toBase58(), ...gains })));
   // The real executor validates through the policy, which records each message
   // hash; the injected execute bypasses it, so mirror that side effect here.
   const validatedHashes: string[] = [];
@@ -76,7 +91,6 @@ function fixture(execute = vi.fn(async () => receiptFixture())) {
     validatedHashes.push(executed.policy.messageHash);
     return executed;
   });
-  const wallet = Keypair.generate().publicKey;
   const position = Keypair.generate().publicKey;
   const before = positionFixture({ owner: wallet, position, baseRaw: '200000000', quoteRaw: '30000000' });
   const reads = {
@@ -96,8 +110,9 @@ function fixture(execute = vi.fn(async () => receiptFixture())) {
     commitment: 'confirmed',
     config: loadConfig(baseEnv()),
     execute: recordingExecute,
+    sleep: async () => undefined,
   });
-  return { handlers, reads, execute, wallet, position, before };
+  return { handlers, reads, execute, wallet, position, before, gains };
 }
 
 describe('M4 weighted deposit handler composition', () => {
@@ -152,15 +167,15 @@ describe('M4 weighted deposit handler composition', () => {
 
 describe('M4 withdrawal handler composition', () => {
   it('settles realized amounts from the post-execution readback', async () => {
-    const { handlers, reads, execute, before, wallet, position } = fixture();
+    const { handlers, reads, execute, before, wallet, position, gains } = fixture();
     reads.getPosition
       .mockResolvedValueOnce(before)
       .mockResolvedValueOnce(positionFixture({
         owner: wallet, position, baseRaw: '100000000', quoteRaw: '30000000',
       }));
-    reads.getState
-      .mockResolvedValueOnce(stateFixture())
-      .mockResolvedValueOnce(stateFixture('10103000000', '500500000'));
+    // Receipt deltas: principal plus the claimed fee entitlement.
+    gains.base = 103_000_000n;
+    gains.quote = 500_000n;
     const request: WithdrawRequest = {
       method: 'withdraw', position_id: before.position_id, percent: 50,
     };
@@ -182,13 +197,12 @@ describe('M4 withdrawal handler composition', () => {
   });
 
   it('reports a closed position and the full balance when the account is gone', async () => {
-    const { handlers, reads, before } = fixture();
+    const { handlers, reads, before, gains } = fixture();
     reads.getPosition
       .mockResolvedValueOnce(before)
       .mockRejectedValueOnce(new UnknownPositionError('gone'));
-    reads.getState
-      .mockResolvedValueOnce(stateFixture())
-      .mockResolvedValueOnce(stateFixture('10203000000', '530500000'));
+    gains.base = 203_000_000n;
+    gains.quote = 30_500_000n;
     const request: WithdrawRequest = {
       method: 'withdraw', position_id: before.position_id, percent: 100,
     };
@@ -208,29 +222,44 @@ describe('M4 withdrawal handler composition', () => {
     reads.getPosition
       .mockResolvedValueOnce(before)
       .mockRejectedValueOnce(new UnknownPositionError('gone'));
-    reads.getState
-      .mockResolvedValueOnce(stateFixture())
-      .mockResolvedValueOnce(stateFixture('10203000000', '530500000'));
     await handlers.withdraw({ method: 'withdraw', position_id: before.position_id, percent: 100 });
     const call = execute.mock.calls[0] as unknown as [unknown, { commitment: string }];
     expect(call[1]).toMatchObject({ commitment: 'finalized' });
   });
 
-  it('returns the confirmed receipt as ambiguous when post-write reads fail', async () => {
+  it('re-reads a lagging node until the confirmed close is visible', async () => {
+    // Live 2026-10-02: a finalized close was reported ambiguous on one stale read.
+    const { handlers, reads, before, gains } = fixture();
+    reads.getPosition
+      .mockResolvedValueOnce(before)
+      .mockRejectedValueOnce(new RpcReadError('lagging endpoint'))
+      .mockResolvedValueOnce(before)
+      .mockRejectedValueOnce(new UnknownPositionError('gone'));
+    gains.base = 203_000_000n;
+    gains.quote = 30_500_000n;
+    const result = await handlers.withdraw({
+      method: 'withdraw', position_id: before.position_id, percent: 100,
+    });
+    expect(result).toMatchObject({ ok: true, data: { closed: true } });
+    expect(reads.getPosition).toHaveBeenCalledTimes(4);
+  });
+
+  it('returns the confirmed receipt as ambiguous, naming the check, when reads never agree', async () => {
     const { handlers, reads, before } = fixture();
     reads.getPosition
       .mockResolvedValueOnce(before)
       .mockRejectedValueOnce(new RpcReadError('lagging endpoint'));
-    reads.getState
-      .mockResolvedValueOnce(stateFixture())
-      .mockResolvedValueOnce(stateFixture('10203000000', '530500000'));
     const result = await handlers.withdraw({
       method: 'withdraw', position_id: before.position_id, percent: 100,
     });
     expect(result).toMatchObject({
       ok: false,
       error: 'submission_ambiguous',
-      data: { pending_signature: 'confirmed-signature' },
+      data: {
+        detail: 'confirmed withdrawal could not be reconciled from chain state: '
+          + 'position still present after close',
+        pending_signature: 'confirmed-signature',
+      },
       tx_signatures: ['confirmed-signature'],
       transactions: [{ signature: 'confirmed-signature' }],
     });

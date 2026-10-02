@@ -96,6 +96,23 @@ function swapRequest(overrides: Partial<SwapRequest> = {}): SwapRequest {
 }
 
 /** Withdraw/deposit legs need no balance meta; only the swap leg is settled. */
+/** Full-close receipt: the wallet gains principal plus the claimed fees
+ *  (+0.2 base, +3 quote; fees 0.003 / 0.5 → principal 0.197 / 2.5). */
+function withdrawMeta(wallet: PublicKey): TransactionMeta {
+  const owner = wallet.toBase58();
+  return {
+    fee: 5_000,
+    preTokenBalances: [
+      { accountIndex: 1, mint: BASE_MINT.toBase58(), owner, uiTokenAmount: { amount: '10000000000' } },
+      { accountIndex: 2, mint: IN_MINT, owner, uiTokenAmount: { amount: '500000000' } },
+    ],
+    postTokenBalances: [
+      { accountIndex: 1, mint: BASE_MINT.toBase58(), owner, uiTokenAmount: { amount: '10200000000' } },
+      { accountIndex: 2, mint: IN_MINT, owner, uiTokenAmount: { amount: '503000000' } },
+    ],
+  } as TransactionMeta;
+}
+
 function legacyExecuted(signature: string): ExecutedTransaction {
   return {
     policy: { messageHash: 'a'.repeat(64), solSpendLamports: 0 },
@@ -178,7 +195,10 @@ function fixture(options: FixtureOptions = {}) {
     }
     legacyCall += 1;
     const plain = legacySignatures.filter((signature) => signature !== 'swap-sig');
-    return legacyExecuted(plain[legacyCall - 1] ?? `legacy-${legacyCall}`);
+    const executed = legacyExecuted(plain[legacyCall - 1] ?? `legacy-${legacyCall}`);
+    return opts.policyInput.nativeWithdrawal === undefined
+      ? executed
+      : { ...executed, meta: withdrawMeta(wallet) };
   }), validatedHashes);
   const reads = {
     getState: vi.fn(async () => stateFixture()),
@@ -223,6 +243,7 @@ function fixture(options: FixtureOptions = {}) {
     config,
     jito,
     execute,
+    sleep: async () => undefined,
     ...(options.bundleSubmit ? { bundleSubmit: options.bundleSubmit } : {}),
   });
   return {
@@ -244,15 +265,12 @@ function refreshRequest(positionId: string, overrides: Partial<RefreshBundleRequ
   };
 }
 
-/** Withdraw leg: the full-close readback expects the position gone and the
- *  wallet richer by principal + claimed fees. */
+/** Withdraw leg: the full-close readback finds the position gone; the
+ *  returned amounts come from the receipt (`withdrawMeta`). */
 function withLandedWithdraw(reads: ReturnType<typeof fixture>['reads'], wallet: PublicKey, position: PublicKey) {
   reads.getPosition
     .mockResolvedValueOnce(positionFixture(wallet, position))
     .mockRejectedValueOnce(new UnknownPositionError('closed'));
-  reads.getState
-    .mockResolvedValueOnce(stateFixture())
-    .mockResolvedValueOnce(stateFixture('10200000000', '503000000'));
 }
 
 describe('M5 swap handler', () => {
@@ -573,19 +591,8 @@ function landedReceipt(label: string, meta: TransactionMeta, finalized = false) 
 }
 
 function bundleMeta(f: ReturnType<typeof fixture>): Record<string, TransactionMeta> {
-  const owner = f.wallet.toBase58();
   return {
-    withdraw: {
-      fee: 5_000,
-      preTokenBalances: [
-        { accountIndex: 1, mint: BASE_MINT.toBase58(), owner, uiTokenAmount: { amount: '10000000000' } },
-        { accountIndex: 2, mint: IN_MINT, owner, uiTokenAmount: { amount: '500000000' } },
-      ],
-      postTokenBalances: [
-        { accountIndex: 1, mint: BASE_MINT.toBase58(), owner, uiTokenAmount: { amount: '10200000000' } },
-        { accountIndex: 2, mint: IN_MINT, owner, uiTokenAmount: { amount: '503000000' } },
-      ],
-    },
+    withdraw: withdrawMeta(f.wallet),
     swap: swapExecuted(f.wallet, '1000000000').meta,
     deposit_bid: { fee: 6_000 },
     deposit_ask: { fee: 6_000 },
