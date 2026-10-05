@@ -49,7 +49,7 @@ async function fetchTokenInfoFromCoinGecko(
 ): Promise<Omit<TokenMapping, 'address'> | null> {
   return withRetry(async () => {
     const url = `https://api.coingecko.com/api/v3/coins/${chain}/contract/${address}`;
-    const response = await axios.get(url);
+    const response = await axios.get(url, { timeout: 5000, signal: AbortSignal.timeout(5000) });
     const data = response.data as {
       symbol?: string;
       id?: string;
@@ -92,6 +92,8 @@ export async function getTokenPrices(coingeckoIds: string[]): Promise<Map<string
   for (const bucket of buckets) {
     const bucketMap = await withRetry(async () => {
       const response = await axios.get('https://api.coingecko.com/api/v3/simple/price', {
+        timeout: 5000,
+        signal: AbortSignal.timeout(5000),
         params: { ids: bucket.join(','), vs_currencies: 'usd' },
       });
       const out = new Map<string, number>();

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createServer } from 'node:http';
 import {
   RpcCuRateLimiter,
   rateLimitedFetch,
@@ -8,6 +9,38 @@ import {
 } from './rpcRateLimit.js';
 
 describe('Alchemy-compatible RPC CU limiting', () => {
+  it.each(['headers', 'body'])('aborts an HTTP request stalled on %s', async (phase) => {
+    const server = createServer((_req, res) => {
+      if (phase === 'body') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.write('{');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = server.address() as { port: number };
+      const wrapped = rateLimitedFetch(new RpcCuRateLimiter(240), globalThis.fetch,
+        { timeoutMs: 100 });
+      await expect((async () => {
+        const response = await wrapped(`http://127.0.0.1:${address.port}`);
+        await response.text();
+      })()).rejects.toThrow();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('preserves cancellation supplied by the caller', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const wrapped = rateLimitedFetch(new RpcCuRateLimiter(240), async (_input, init) => {
+      init?.signal?.throwIfAborted();
+      return new Response('{}');
+    });
+    await expect(wrapped('https://rpc.invalid', { signal: controller.signal })).rejects.toThrow();
+  });
+
   it('prices the M3 history methods and JSON-RPC batches', () => {
     expect(rpcBodyCu(JSON.stringify({ method: 'getTransaction' }))).toBe(40);
     expect(

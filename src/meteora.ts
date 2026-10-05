@@ -561,11 +561,15 @@ export class MeteoraReads {
     if (cached && cached.expiresAt > this.now()) return cached.prices;
     const ids = [metadata.mappingX.coingeckoId, metadata.mappingY.coingeckoId].filter(Boolean);
     if (ids.length === 0) return new Map();
+    const started = performance.now();
     try {
       const prices = await this.tokenPrices(ids);
       this.prices.set(metadata.address, { expiresAt: this.now() + this.priceTtlMs, prices });
       return prices;
     } catch {
+      this.audit({ kind: 'read_component_error', ts: this.now() / 1000,
+        pool: metadata.address, component: 'prices',
+        duration_ms: Math.round(performance.now() - started), rpc_cu_wait_ms: 0, rpc_http_ms: 0 });
       return new Map();
     }
   }
@@ -582,28 +586,37 @@ export class MeteoraReads {
       const timings: Record<string, number> = {};
       const cuWait: Record<string, number> = {};
       const http: Record<string, number> = {};
+      this.operationTimings = timings;
+      this.operationCuWait = cuWait;
+      this.operationHttp = http;
       const measure = async <T>(name: string, read: () => Promise<T>): Promise<T> => {
         const started = performance.now();
         const rpc: RpcFetchTiming = { cuWaitMs: 0, httpMs: 0, requests: 0 };
         try {
           return await withRpcFetchTiming(rpc, read);
+        } catch (error) {
+          this.audit({ kind: 'read_component_error', ts: this.now() / 1000,
+            pool: poolAddress, component: name,
+            duration_ms: Math.round(performance.now() - started),
+            rpc_cu_wait_ms: Math.round(rpc.cuWaitMs), rpc_http_ms: Math.round(rpc.httpMs) });
+          throw error;
         } finally {
           timings[name] = Math.round(performance.now() - started);
           cuWait[name] = Math.round(rpc.cuWaitMs);
           http[name] = Math.round(rpc.httpMs);
         }
       };
-      const [active, walletX, walletY, reserveX, reserveY, prices] = await Promise.all([
+      const components = [
         measure('active_bin', () => pool.getActiveBin()),
         measure('wallet_base', () => this.walletBalance(endpoint, metadata.tokenX.mint)),
         measure('wallet_quote', () => this.walletBalance(endpoint, metadata.tokenY.mint)),
         measure('reserve_base', () => this.reserveBalance(endpoint, metadata.reserveX)),
         measure('reserve_quote', () => this.reserveBalance(endpoint, metadata.reserveY)),
         measure('prices', () => this.poolPrices(metadata)),
-      ]);
-      this.operationTimings = timings;
-      this.operationCuWait = cuWait;
-      this.operationHttp = http;
+      ] as const;
+      // Settle siblings before retrying: no abandoned read can alter the next attempt's audit.
+      await Promise.allSettled(components);
+      const [active, walletX, walletY, reserveX, reserveY, prices] = await Promise.all(components);
       const xPrice = prices.get(metadata.mappingX.coingeckoId);
       const yPrice = prices.get(metadata.mappingY.coingeckoId);
       const tvlUsd =

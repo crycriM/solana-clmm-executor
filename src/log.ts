@@ -171,6 +171,16 @@ export interface RpcFailoverLine {
   error: string;
 }
 
+export interface ReadComponentErrorLine {
+  kind: 'read_component_error';
+  ts: number;
+  pool: string;
+  component: string;
+  duration_ms: number;
+  rpc_cu_wait_ms: number;
+  rpc_http_ms: number;
+}
+
 /**
  * One Jito bundle attempt (plan T5.3): the ordered component signatures, the
  * shared block-height bound, every observed status transition, and the final
@@ -193,6 +203,7 @@ export type ExecutorLine =
   | ExecutorStreamGapLine
   | PolicyRejectedLine
   | RpcFailoverLine
+  | ReadComponentErrorLine
   | JitoBundleLine;
 
 function redactLine(line: ExecutorLine): JsonObject {

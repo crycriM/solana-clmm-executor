@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import BN from 'bn.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-ag/dlmm';
 import { PublicKey, type AccountInfo, type ParsedAccountData } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
@@ -301,6 +301,32 @@ describe('M2 get_state recorded RPC mapping', () => {
       to_endpoint: 'https://fallback.rpc.test',
       error: 'Error',
     });
+  });
+
+  it('retains failed component timings and emits an audit before returning the read error', async () => {
+    const connection = new FakeConnection();
+    const h = harness([connection]);
+    vi.spyOn(connection, 'getTokenAccountBalance').mockRejectedValue(new Error('secret endpoint'));
+    await expect(h.reads.getState(TEST_POOL)).rejects.toThrow('RPC read failed');
+    expect(h.reads.auditContext().readTimingsMs).toMatchObject({
+      reserve_base: expect.any(Number), reserve_quote: expect.any(Number),
+    });
+    expect(h.audit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'read_component_error', component: 'reserve_base',
+        duration_ms: expect.any(Number), rpc_http_ms: expect.any(Number) }),
+    ]));
+    expect(JSON.stringify(h.audit)).not.toContain('secret endpoint');
+  });
+
+  it('audits failed price requests while preserving the optional TVL fallback', async () => {
+    const h = harness();
+    // Inject a failing dependency without invoking CoinGecko.
+    vi.spyOn(h.reads as unknown as { tokenPrices: () => Promise<Map<string, number>> },
+      'tokenPrices').mockRejectedValue(new Error('timeout'));
+    expect((await h.reads.getState(TEST_POOL)).tvl_usd).toBeNull();
+    expect(h.audit).toContainEqual(expect.objectContaining({
+      kind: 'read_component_error', component: 'prices', duration_ms: expect.any(Number),
+    }));
   });
 
   it('returns null TVL when either external token price is unavailable', async () => {

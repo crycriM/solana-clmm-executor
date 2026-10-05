@@ -173,6 +173,8 @@ export function rpcBodyCu(body: unknown): number {
 }
 
 export interface RpcRetryOptions {
+  /** Deadline per HTTP attempt, including response body consumption. */
+  timeoutMs?: number;
   /** Total attempts for a 429; 1 disables retrying. */
   attempts?: number;
   /** First backoff step; doubled per attempt, with jitter below the step. */
@@ -221,7 +223,9 @@ export function rateLimitedFetch(
       const fetchAt = performance.now();
       let response: Response;
       try {
-        response = await fetchFn(input, init);
+        const deadline = AbortSignal.timeout(options.timeoutMs ?? 10_000);
+        const signal = init?.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+        response = await fetchFn(input, { ...init, signal });
       } finally {
         if (timing) {
           timing.httpMs += performance.now() - fetchAt;
