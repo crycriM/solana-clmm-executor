@@ -34,6 +34,14 @@ export interface ExecutorConfig {
   /** Optional explicit websocket endpoint; web3.js otherwise derives it. */
   rpcWsUrl: string | null;
   rpcMaxCuPerSecond: number;
+  /**
+   * Swap-stream endpoint (getTransaction backfill + logsSubscribe), so a busy
+   * pool's stream can run on another provider with its own CU bucket instead of
+   * queueing the verbs (live 2026-10-02). Each defaults to the read settings.
+   */
+  streamRpcUrl: string;
+  streamWsUrl: string | null;
+  streamMaxCuPerSecond: number;
   commitment: 'confirmed' | 'finalized';
   walletSigner: SignerKind;
   kmsKeyArn: string | null;
@@ -151,6 +159,14 @@ function poolDefaults(env: Record<string, string | undefined>): ExecutorConfig {
     rpcMaxCuPerSecond: env['SOLANA_RPC_MAX_CU_PER_SECOND']
       ? number(env, 'SOLANA_RPC_MAX_CU_PER_SECOND')
       : DEFAULT_RPC_MAX_CU_PER_SECOND,
+    streamRpcUrl: optional(env, 'SOLANA_STREAM_RPC_URL', required(env, 'SOLANA_RPC_URL')),
+    streamWsUrl: optional(env, 'SOLANA_STREAM_WS_URL')
+      || (env['SOLANA_STREAM_RPC_URL'] ? null : optional(env, 'SOLANA_WS_URL') || null),
+    streamMaxCuPerSecond: env['SOLANA_STREAM_MAX_CU_PER_SECOND']
+      ? number(env, 'SOLANA_STREAM_MAX_CU_PER_SECOND')
+      : env['SOLANA_RPC_MAX_CU_PER_SECOND']
+        ? number(env, 'SOLANA_RPC_MAX_CU_PER_SECOND')
+        : DEFAULT_RPC_MAX_CU_PER_SECOND,
     commitment: optional(env, 'SOLANA_COMMITMENT', 'confirmed') as ExecutorConfig['commitment'],
     walletSigner: required(env, 'WALLET_SIGNER') as SignerKind,
     kmsKeyArn: optional(env, 'KMS_KEY_ARN') || null,
@@ -199,6 +215,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (config.rpcWsUrl) wsUrl(config.rpcWsUrl, 'SOLANA_WS_URL');
   if (config.rpcMaxCuPerSecond <= 0) {
     throw new ConfigValidationError('SOLANA_RPC_MAX_CU_PER_SECOND must be greater than zero');
+  }
+  httpUrl(config.streamRpcUrl, 'SOLANA_STREAM_RPC_URL');
+  if (config.streamWsUrl) wsUrl(config.streamWsUrl, 'SOLANA_STREAM_WS_URL');
+  if (config.streamMaxCuPerSecond <= 0) {
+    throw new ConfigValidationError('SOLANA_STREAM_MAX_CU_PER_SECOND must be greater than zero');
   }
   if (config.jitoBlockEngineUrl) httpUrl(config.jitoBlockEngineUrl, 'JITO_BLOCK_ENGINE_URL');
   if (config.commitment !== 'confirmed' && config.commitment !== 'finalized') {

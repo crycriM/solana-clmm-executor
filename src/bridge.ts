@@ -297,6 +297,8 @@ export async function main(injectedHandlers?: ExecHandlers): Promise<number> {
       rpc_write_url: config.rpcWriteUrl,
       rpc_ws_url: config.rpcWsUrl,
       rpc_max_cu_per_second: config.rpcMaxCuPerSecond,
+      rpc_stream_url: config.streamRpcUrl,
+      rpc_stream_max_cu_per_second: config.streamMaxCuPerSecond,
       pool_allowlist: config.poolAllowlist,
       mint_allowlist: config.mintAllowlist,
       wallet_pubkey: wallet.toBase58(),
@@ -353,7 +355,7 @@ async function startSwapStream(
     await Promise.all(config.poolAllowlist.map((pool) => reads.ensurePoolDecimals(pool)));
     writer = new JsonlWriter(config.swapStreamPath);
     const stream = new SwapStream({
-      connection: getSolanaConnection(config),
+      connection: getSolanaConnection(config, { stream: true }),
       writer,
       log: { write: (line) => log.write(line) },
       pools: config.poolAllowlist,

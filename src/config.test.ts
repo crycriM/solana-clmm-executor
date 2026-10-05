@@ -61,6 +61,9 @@ describe('config fail-closed', () => {
     ['MAX_ACTIVE_BIN_SLIPPAGE_BINS', '2147483648'],
     ['MAX_PRIORITY_FEE_LAMPORTS', '9007199254740992'],
     ['SOLANA_RPC_MAX_CU_PER_SECOND', '0'],
+    ['SOLANA_STREAM_RPC_URL', 'no-url'],
+    ['SOLANA_STREAM_WS_URL', 'https://not-a-websocket.test'],
+    ['SOLANA_STREAM_MAX_CU_PER_SECOND', '0'],
     ['JITO_TIP_LAMPORTS', '-1'],
   ])('rejects invalid %s', (key, value) => {
     expect(() => loadConfig(baseEnv({ [key]: value }))).toThrow(key);
@@ -155,6 +158,22 @@ describe('policyHash', () => {
   it('allows a lower explicit RPC throughput budget', () => {
     expect(loadConfig(baseEnv({ SOLANA_RPC_MAX_CU_PER_SECOND: '120' })).rpcMaxCuPerSecond)
       .toBe(120);
+  });
+
+  it('defaults the swap stream to the read endpoint and budget', () => {
+    const cfg = loadConfig(baseEnv({ SOLANA_WS_URL: 'wss://rpc.example/ws', SOLANA_RPC_MAX_CU_PER_SECOND: '40' }));
+    expect([cfg.streamRpcUrl, cfg.streamWsUrl, cfg.streamMaxCuPerSecond])
+      .toEqual([cfg.rpcReadUrl, 'wss://rpc.example/ws', 40]);
+  });
+
+  it('moves the swap stream to its own provider and budget', () => {
+    const cfg = loadConfig(baseEnv({
+      SOLANA_WS_URL: 'wss://alchemy.example/ws', SOLANA_RPC_MAX_CU_PER_SECOND: '40',
+      SOLANA_STREAM_RPC_URL: 'https://drpc.example/key', SOLANA_STREAM_MAX_CU_PER_SECOND: '100',
+    }));
+    // The read provider's websocket is never paired with another provider's HTTP.
+    expect([cfg.streamRpcUrl, cfg.streamWsUrl, cfg.streamMaxCuPerSecond, cfg.rpcMaxCuPerSecond])
+      .toEqual(['https://drpc.example/key', null, 100, 40]);
   });
 
   it('accepts an explicit secure websocket endpoint', () => {

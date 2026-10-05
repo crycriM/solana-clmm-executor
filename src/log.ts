@@ -132,6 +132,8 @@ export interface ExecutorStartedLine {
   rpc_write_url: string;
   rpc_ws_url: string | null;
   rpc_max_cu_per_second: number;
+  rpc_stream_url: string;
+  rpc_stream_max_cu_per_second: number;
   pool_allowlist: string[];
   mint_allowlist: string[];
   wallet_pubkey: string;
