@@ -23,6 +23,7 @@ export type ErrorCode =
   | 'rpc_timeout'
   | 'bins_cross_active'
   | 'submission_ambiguous'
+  | 'transaction_failed'
   | 'simulation_failed'
   | 'unknown_position'
   | 'bad_request'

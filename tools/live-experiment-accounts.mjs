@@ -38,6 +38,22 @@ async function main() {
   const keys = derived.flatMap((d) => [d.position, d.lowerBinArray, d.upperBinArray,
     d.userToken, ...(d.bitmapExtension ? [d.bitmapExtension] : [])]);
   const response = await connection.getMultipleAccountsInfoAndContext(keys);
+  // A fresh ladder has different PDAs; checking only those two would miss an
+  // unfinished earlier run on the same wallet and pool.
+  // Alchemy's free-tier endpoint answers point reads but 429s this wallet-wide
+  // scan. Use the public mainnet endpoint for this one unsigned safety check.
+  const inventoryConnection = new Connection('https://api.mainnet-beta.solana.com', connectionOptions);
+  if (await inventoryConnection.getGenesisHash() !== '5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d') {
+    throw new Error('experiment requires mainnet-beta');
+  }
+  const existing = await inventoryConnection.getProgramAccounts(derived[0].programId, {
+    commitment: 'finalized', dataSlice: { offset: 0, length: 0 },
+    filters: [
+      { dataSize: 8120 }, // Meteora PositionV2
+      { memcmp: { offset: 8, bytes: pool.toBase58() } },
+      { memcmp: { offset: 40, bytes: wallet.toBase58() } },
+    ],
+  });
   let index = 0;
   const positions = derived.map((d) => {
     const [position, lower, upper, ata, bitmap] = response.value.slice(index, index + (d.bitmapExtension ? 5 : 4));
@@ -56,6 +72,7 @@ async function main() {
   console.log(JSON.stringify({
     native_lamports: native.value, slot: Math.max(native.context.slot, response.context.slot),
     rent_lamports: positions.filter((p) => !p.exists).length * Math.ceil(POSITION_FEE * 1e9),
+    existing_position_ids: existing.map((p) => p.pubkey.toBase58()),
     positions,
   }));
 }

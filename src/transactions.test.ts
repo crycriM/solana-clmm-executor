@@ -9,6 +9,7 @@ import { loadConfig } from './config.js';
 import { PolicyRejected, TransactionPolicy } from './policy.js';
 import type { Signer } from './signer.js';
 import {
+  ConfirmedTransactionFailed,
   executeLegacyTransaction,
   type ExecutionConnection,
 } from './transactions.js';
@@ -125,6 +126,41 @@ describe('executeLegacyTransaction', () => {
       policy: { messageHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
     });
     expect(f.calls).toEqual(['blockhash', 'simulate', 'send:throw']);
+  });
+
+  it('classifies a landed program failure after confirmation throws using its receipt', async () => {
+    const f = fixture();
+    const chainError = { InstructionError: [2, { Custom: 6004 }] };
+    f.connection.confirmTransaction = async () => {
+      f.calls.push('confirm:throw');
+      throw new Error('subscription result unavailable');
+    };
+    f.connection.getTransaction = async () => {
+      f.calls.push('receipt');
+      return { slot: 42, blockTime: 1_700_000_000, meta: { fee: 5_000, err: chainError } };
+    };
+    await expect(executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'finalized',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    })).rejects.toMatchObject({
+      receipt: { slot: 42, fee_lamports: 5_000, status: 'failed' },
+      chainError,
+    } satisfies Partial<ConfirmedTransactionFailed>);
+    expect(f.calls).toEqual(['blockhash', 'simulate', expect.stringMatching(/^send:true$/),
+      'confirm:throw', 'receipt']);
+  });
+
+  it('accepts a successful receipt when confirmation throws', async () => {
+    const f = fixture();
+    f.connection.confirmTransaction = async () => {
+      f.calls.push('confirm:throw');
+      throw new Error('subscription result unavailable');
+    };
+    const result = await executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'finalized',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    });
+    expect(result.receipt).toMatchObject({ slot: 42, status: 'finalized' });
   });
 
   it('retries post-confirmation receipt indexing lag', async () => {

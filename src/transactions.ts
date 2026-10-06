@@ -65,6 +65,18 @@ export class SubmissionAmbiguous extends Error {
   }
 }
 
+/** The chain receipt proves that a submitted transaction failed atomically. */
+export class ConfirmedTransactionFailed extends Error {
+  constructor(
+    readonly receipt: TxReceipt,
+    readonly chainError: unknown,
+    readonly policy?: PolicyDecision,
+    readonly blockhash?: string,
+  ) {
+    super('confirmed transaction failed on chain');
+  }
+}
+
 /**
  * Config commitments never include web3's `processed`; the narrower alias is
  * what makes a real `Connection` structurally assignable to this surface.
@@ -81,6 +93,7 @@ export interface TransactionTokenBalance {
 
 export interface TransactionMeta {
   fee: number;
+  err?: unknown;
   preBalances?: number[] | null;
   postBalances?: number[] | null;
   preTokenBalances?: TransactionTokenBalance[] | null;
@@ -181,26 +194,12 @@ async function admitAndSettle(
       blockhash.blockhash,
     );
   }
-  let confirmation: Awaited<ReturnType<ExecutionConnection['confirmTransaction']>>;
+  let confirmation: Awaited<ReturnType<ExecutionConnection['confirmTransaction']>> | null = null;
   try {
     confirmation = await connection.confirmTransaction({ ...blockhash, signature }, commitment);
   } catch {
-    throw new SubmissionAmbiguous(
-      'transaction confirmation result was unavailable',
-      signature,
-      undefined,
-      decision,
-      blockhash.blockhash,
-    );
-  }
-  if (confirmation.value.err !== null) {
-    throw new SubmissionAmbiguous(
-      'confirmed transaction reported an execution error',
-      signature,
-      undefined,
-      decision,
-      blockhash.blockhash,
-    );
+    // A confirmation exception does not tell us whether the transaction landed.
+    // The indexed receipt can still prove success or a failed, fee-paying write.
   }
   let chainTx: Awaited<ReturnType<ExecutionConnection['getTransaction']>>;
   try {
@@ -223,15 +222,30 @@ async function admitAndSettle(
       blockhash.blockhash,
     );
   }
-  return {
-    receipt: {
+  const receipt: TxReceipt = {
+    signature,
+    slot: chainTx.slot,
+    block_time: chainTx.blockTime ?? null,
+    fee_lamports: chainTx.meta.fee,
+    compute_unit_price: null,
+    status: chainTx.meta.err == null
+      ? (commitment === 'finalized' ? 'finalized' : 'confirmed')
+      : 'failed',
+  };
+  if (chainTx.meta.err != null) {
+    throw new ConfirmedTransactionFailed(receipt, chainTx.meta.err, decision, blockhash.blockhash);
+  }
+  if (confirmation && confirmation.value.err != null) {
+    throw new SubmissionAmbiguous(
+      'confirmation disagreed with the transaction receipt',
       signature,
-      slot: chainTx.slot,
-      block_time: chainTx.blockTime ?? null,
-      fee_lamports: chainTx.meta.fee,
-      compute_unit_price: null,
-      status: commitment === 'finalized' ? 'finalized' : 'confirmed',
-    },
+      receipt,
+      decision,
+      blockhash.blockhash,
+    );
+  }
+  return {
+    receipt,
     meta: chainTx.meta,
   };
 }

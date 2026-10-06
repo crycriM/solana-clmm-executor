@@ -7,6 +7,7 @@ import { RpcReadError, UnknownPositionError } from './meteora.js';
 import { PolicyRejected } from './policy.js';
 import type { DepositSingleSidedRequest, PositionData, WithdrawRequest } from './protocol.js';
 import { baseEnv } from './testing.js';
+import { ConfirmedTransactionFailed } from './transactions.js';
 
 const pool = new PublicKey('11111111111111111111111111111111');
 const baseMint = new PublicKey('So11111111111111111111111111111111111111112');
@@ -161,6 +162,20 @@ describe('M4 weighted deposit handler composition', () => {
     });
     expect(handlers.writeAudit()).toMatchObject({
       policyDecision: 'rejected', policyRule: 'native_deposit_binding', simulationOk: null,
+    });
+  });
+
+  it('returns a failed chain receipt rather than an ambiguous submission', async () => {
+    const chainError = { InstructionError: [2, { Custom: 6004 }] };
+    const receipt = { signature: 'failed-signature', slot: 42, block_time: 1_756_900_001,
+      fee_lamports: 5_000, compute_unit_price: null, status: 'failed' as const };
+    const { handlers } = fixture(async () => {
+      throw new ConfirmedTransactionFailed(receipt, chainError);
+    });
+    const result = await handlers.deposit_single_sided(request());
+    expect(result).toMatchObject({
+      ok: false, error: 'transaction_failed', data: { chain_error: chainError },
+      tx_signatures: ['failed-signature'], transactions: [receipt],
     });
   });
 });

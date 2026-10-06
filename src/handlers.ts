@@ -71,6 +71,7 @@ import {
   executeLegacyTransaction,
   SimulationFailed,
   SubmissionAmbiguous,
+  ConfirmedTransactionFailed,
   type ExecutedTransaction,
   type ExecutionCommitment,
   type ExecutionConnection,
@@ -597,6 +598,14 @@ function writeErrorResponse(error: unknown): ExecResponse<never> | null {
   }
   if (error instanceof SimulationFailed) {
     return errorResponse('simulation_failed', error.message) as ExecResponse<never>;
+  }
+  if (error instanceof ConfirmedTransactionFailed) {
+    return {
+      ...errorResponse('transaction_failed', error.message),
+      data: { detail: error.message, chain_error: error.chainError },
+      tx_signatures: [error.receipt.signature],
+      transactions: [error.receipt],
+    } as unknown as ExecResponse<never>;
   }
   if (error instanceof SubmissionAmbiguous) {
     return {
