@@ -363,6 +363,8 @@ describe('stdio loop', () => {
 });
 
 describe('compiled bridge with the offline fixture entrypoint', () => {
+  // Node + SDK startup is ~1 s locally but 7–10 s on the loaded Pi; stay under testTimeout (30 s).
+  const SPAWN_TIMEOUT_MS = 25_000;
   function cli(input: string, overrides: NodeJS.ProcessEnv = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'executor-cli-'));
     dirs.push(dir);
@@ -372,7 +374,7 @@ describe('compiled bridge with the offline fixture entrypoint', () => {
       {
         input,
         encoding: 'utf8',
-        timeout: 10000,
+        timeout: SPAWN_TIMEOUT_MS,
         env: {
           ...process.env,
           ...baseEnv({ DRY_RUN: 'true', EXECUTOR_LOG_DIR: dir, ...overrides }),
@@ -429,7 +431,7 @@ describe('compiled bridge with the offline fixture entrypoint', () => {
       {
         input: JSON.stringify(request) + '\n',
         encoding: 'utf8',
-        timeout: 10000,
+        timeout: SPAWN_TIMEOUT_MS,
         env: {
           ...process.env,
           ...baseEnv({
