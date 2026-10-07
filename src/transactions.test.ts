@@ -143,7 +143,8 @@ describe('executeLegacyTransaction', () => {
       connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'finalized',
       policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
     })).rejects.toMatchObject({
-      receipt: { slot: 42, fee_lamports: 5_000, status: 'failed' },
+      receipt: { signature: expect.any(String), slot: 42, block_time: 1_700_000_000,
+        fee_lamports: 5_000, compute_unit_price: null, status: 'failed' },
       chainError,
     } satisfies Partial<ConfirmedTransactionFailed>);
     expect(f.calls).toEqual(['blockhash', 'simulate', expect.stringMatching(/^send:true$/),
