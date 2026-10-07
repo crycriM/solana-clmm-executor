@@ -597,7 +597,11 @@ function writeErrorResponse(error: unknown): ExecResponse<never> | null {
     return errorResponse(error.code, error.message) as ExecResponse<never>;
   }
   if (error instanceof SimulationFailed) {
-    return errorResponse('simulation_failed', error.message) as ExecResponse<never>;
+    // Meteora 6004: the active bin moved past max_active_bin_slippage after our read.
+    // Unsigned and re-plannable, the same as the pre-check in deposit.ts.
+    const drift = error.logs.some((line) => line.includes('ExceededBinSlippageTolerance'));
+    return errorResponse(drift ? 'active_bin_slippage_exceeded' : 'simulation_failed',
+      error.message) as ExecResponse<never>;
   }
   if (error instanceof ConfirmedTransactionFailed) {
     return {

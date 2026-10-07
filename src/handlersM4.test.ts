@@ -7,7 +7,7 @@ import { RpcReadError, UnknownPositionError } from './meteora.js';
 import { PolicyRejected } from './policy.js';
 import type { DepositSingleSidedRequest, PositionData, WithdrawRequest } from './protocol.js';
 import { baseEnv } from './testing.js';
-import { ConfirmedTransactionFailed } from './transactions.js';
+import { ConfirmedTransactionFailed, SimulationFailed } from './transactions.js';
 
 const pool = new PublicKey('11111111111111111111111111111111');
 const baseMint = new PublicKey('So11111111111111111111111111111111111111112');
@@ -177,6 +177,20 @@ describe('M4 weighted deposit handler composition', () => {
       ok: false, error: 'transaction_failed', data: { chain_error: chainError },
       tx_signatures: ['failed-signature'], transactions: [receipt],
     });
+  });
+
+  it('maps a simulated bin-slippage rejection to active_bin_slippage_exceeded', async () => {
+    // Logged by the live met-usdc run, 2026-10-07: the bin moved 2 between read and simulation.
+    const logs = ['Program log: AnchorError thrown in programs/lb_clmm/src/instructions/deposit/'
+      + 'add_liquidity_by_weight_one_side.rs:53. Error Code: ExceededBinSlippageTolerance. '
+      + 'Error Number: 6004. Error Message: Exceeded bin slippage tolerance.'];
+    const { handlers } = fixture(async () => { throw new SimulationFailed(logs, undefined, 'bh'); });
+    const result = await handlers.deposit_single_sided(request());
+    expect(result).toMatchObject({ ok: false, error: 'active_bin_slippage_exceeded', tx_signatures: [] });
+    expect(handlers.writeAudit()).toMatchObject({ simulationOk: false, simulationLogs: logs });
+
+    const other = fixture(async () => { throw new SimulationFailed(['route expired'], undefined, 'bh'); });
+    expect((await other.handlers.deposit_single_sided(request())).error).toBe('simulation_failed');
   });
 });
 
