@@ -21,6 +21,8 @@ const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvw
 const RECEIPT_ATTEMPTS = 8;
 const RECEIPT_INITIAL_DELAY_MS = 250;
 const RECEIPT_MAX_DELAY_MS = 2_000;
+// A single unprioritized send can be dropped (met-usdc, 2026-10-07: blockhash expired, never landed).
+const REBROADCAST_INTERVAL_MS = 2_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -195,11 +197,19 @@ async function admitAndSettle(
     );
   }
   let confirmation: Awaited<ReturnType<ExecutionConnection['confirmTransaction']>> | null = null;
+  // Same signed bytes, same signature: a duplicate send executes at most once, and
+  // after the blockhash expires the cluster rejects it. Errors are not informative here.
+  const rebroadcast = setInterval(() => {
+    connection.sendRawTransaction(serialized, { skipPreflight: true, preflightCommitment: commitment })
+      .catch(() => undefined);
+  }, REBROADCAST_INTERVAL_MS);
   try {
     confirmation = await connection.confirmTransaction({ ...blockhash, signature }, commitment);
   } catch {
     // A confirmation exception does not tell us whether the transaction landed.
     // The indexed receipt can still prove success or a failed, fee-paying write.
+  } finally {
+    clearInterval(rebroadcast);
   }
   let chainTx: Awaited<ReturnType<ExecutionConnection['getTransaction']>>;
   try {

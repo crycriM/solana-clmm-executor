@@ -151,6 +151,54 @@ describe('executeLegacyTransaction', () => {
       'confirm:throw', 'receipt']);
   });
 
+  it('rebroadcasts the same signed bytes until the first dropped send is replaced', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const sent: Buffer[] = [];
+    let landed!: () => void;
+    const onChain = new Promise<void>((resolve) => { landed = resolve; });
+    // The cluster ignores the first send (dropped) and includes the second.
+    f.connection.sendRawTransaction = async (raw) => {
+      sent.push(Buffer.from(raw));
+      if (sent.length === 2) landed();
+      return base58(raw.subarray(1, 65));
+    };
+    f.connection.confirmTransaction = async () => { await onChain; return { value: { err: null } }; };
+    const run = executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'finalized',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await expect(run).resolves.toMatchObject({ receipt: { slot: 42, status: 'finalized' } });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.equals(sent[0]!)).toBe(true);
+    expect(f.signCalls()).toBe(1);
+    // Settled: the timer is cleared, nothing is sent after the receipt.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('keeps rebroadcasting when a send errors, and stops when confirmation throws', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let sends = 0;
+    f.connection.sendRawTransaction = async (raw) => {
+      sends += 1;
+      if (sends > 1) throw new Error('rpc busy');
+      return base58(raw.subarray(1, 65));
+    };
+    f.connection.confirmTransaction = () => new Promise((_, reject) => { setTimeout(() => reject(new Error('expired')), 5_000); });
+    const run = executeLegacyTransaction(f.tx, {
+      connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'finalized',
+      policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(run).resolves.toMatchObject({ receipt: { status: 'finalized' } });
+    expect(sends).toBe(3);  // original + rebroadcasts at 2 s and 4 s, none after the throw
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(sends).toBe(3);
+  });
+
   it('accepts a successful receipt when confirmation throws', async () => {
     const f = fixture();
     f.connection.confirmTransaction = async () => {
