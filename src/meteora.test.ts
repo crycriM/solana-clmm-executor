@@ -252,6 +252,92 @@ describe('depth sampler read', () => {
     });
   });
 
+  describe('one-call depth read', () => {
+    /** Pool whose SDK internals are present: the pair holds `activeId`, bin arrays decode to a marker. */
+    function oneCallHarness() {
+      const log = { multi: [] as PublicKey[][], getBins: [] as unknown[][], activeBinCalls: 0 };
+      let activeId = state.active_bin;
+      let missingArrays = false;
+      const connection = Object.assign(new FakeConnection(), {
+        async getMultipleAccountsInfo(addresses: PublicKey[]) {
+          log.multi.push(addresses);
+          const account = (data: string): AccountInfo<Buffer> =>
+            ({ data: Buffer.from(data), executable: false, lamports: 1, owner: poolAddress, rentEpoch: 0 });
+          return [account(JSON.stringify({ activeId })), ...addresses.slice(1).map(() => (missingArrays ? null : account('array')))];
+        },
+      });
+      const pool: PoolReader = {
+        ...fakePool(),
+        async getActiveBin() { log.activeBinCalls += 1; return { binId: state.active_bin }; },
+        program: {
+          programId: new PublicKey(LBCLMM_PROGRAM_IDS['mainnet-beta']),
+          coder: { accounts: { decode: (name: string, data: Buffer) =>
+            (name === 'lbPair' ? JSON.parse(data.toString()) : { marker: 'bin-array' }) } },
+          account: { lbPair: { idlAccount: { name: 'lbPair' } }, binArray: { idlAccount: { name: 'binArray' } } },
+        },
+        async getBins(...args: unknown[]) {
+          log.getBins.push(args);
+          const lower = args[1] as number; const upper = args[2] as number;
+          return Array.from({ length: upper - lower + 1 }, (_, i) => ({
+            binId: lower + i, pricePerToken: String(100 + i), xAmount: new BN(7), yAmount: new BN(9),
+          }));
+        },
+      };
+      const reads = new MeteoraReads(
+        loadConfig(baseEnv({ WALLET_PUBKEY: owner.toBase58(), POOL_ALLOWLIST: TEST_POOL, SOLANA_RPC_URL: connection.rpcEndpoint })),
+        owner,
+        {
+          connections: [connection],
+          createPool: async () => pool,
+          tokenMapping: async (mint) => ({ address: mint, symbol: 'T', coingeckoId: 't', decimals: 6 }),  // no network
+          tokenPrices: async () => new Map(),
+          now: () => 1_756_900_001_123,
+          retries: 1,
+          retryDelayMs: 0,
+        },
+      );
+      return { reads, log, setActive: (id: number) => { activeId = id; }, setMissing: (v: boolean) => { missingArrays = v; } };
+    }
+
+    it('seeds with the two-read path, then reads pair and arrays in one call with no further RPC', async () => {
+      const h = oneCallHarness();
+      await h.reads.getDepth(TEST_POOL, 2);
+      expect(h.log.multi).toHaveLength(0);          // no hint yet: classic path
+      expect(h.log.activeBinCalls).toBe(1);
+
+      h.setActive(state.active_bin + 1);            // price moved one bin
+      const row = await h.reads.getDepth(TEST_POOL, 2);
+      expect(h.log.multi).toHaveLength(1);          // exactly one getMultipleAccounts
+      expect(h.log.multi[0]![0]!.equals(poolAddress)).toBe(true);   // pair first
+      expect(h.log.activeBinCalls).toBe(1);         // getActiveBin not called again
+      const [, lower, upper, , , lowerArray, upperArray] = h.log.getBins[0]!;
+      expect([lower, upper]).toEqual([state.active_bin + 1 - 2, state.active_bin + 1 + 2]);
+      expect(lowerArray).toEqual({ marker: 'bin-array' });
+      expect(upperArray).toEqual({ marker: 'bin-array' });
+      expect(row.active_bin).toBe(state.active_bin + 1);
+      expect(row.bins.map((b) => b.bin_id)).toEqual([-1, 0, 1, 2, 3].map((d) => state.active_bin + d));
+    });
+
+    it('falls back to the two-read path when the active bin leaves the prefetched arrays', async () => {
+      const h = oneCallHarness();
+      await h.reads.getDepth(TEST_POOL, 2);
+      h.setActive(state.active_bin + 500);          // far outside hint ± prefetch
+      const row = await h.reads.getDepth(TEST_POOL, 2);
+      expect(h.log.getBins).toHaveLength(0);        // SDK getBins never used with cached arrays
+      expect(h.log.activeBinCalls).toBe(2);         // classic path answered
+      expect(row.active_bin).toBe(state.active_bin);
+    });
+
+    it('falls back when a bin array account does not exist', async () => {
+      const h = oneCallHarness();
+      await h.reads.getDepth(TEST_POOL, 2);
+      h.setMissing(true);
+      await h.reads.getDepth(TEST_POOL, 2);
+      expect(h.log.getBins).toHaveLength(0);
+      expect(h.log.activeBinCalls).toBe(2);
+    });
+  });
+
   it('refuses a pool outside the allow-list', async () => {
     await expect(harness().reads.getDepth(TEST_BASE_MINT, 1)).rejects.toThrow(InvalidPoolError);
   });

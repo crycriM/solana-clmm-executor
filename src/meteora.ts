@@ -6,8 +6,15 @@
  */
 
 import { createRequire } from 'node:module';
+import BN from 'bn.js';
 import DecimalDefault from 'decimal.js';
-import { LBCLMM_PROGRAM_IDS, POSITION_V2_DISC, type LbPosition } from '@meteora-ag/dlmm';
+import {
+  binIdToBinArrayIndex,
+  deriveBinArray,
+  LBCLMM_PROGRAM_IDS,
+  POSITION_V2_DISC,
+  type LbPosition,
+} from '@meteora-ag/dlmm';
 import {
   Connection,
   PublicKey,
@@ -54,6 +61,8 @@ export interface ReadConnection {
   getAccountInfoAndContext(
     address: PublicKey,
   ): Promise<{ context: { slot: number }; value: AccountInfo<Buffer> | null }>;
+  /** One call for the depth sampler; absent on recorded-RPC fakes, which use the two-read path. */
+  getMultipleAccountsInfo?(addresses: PublicKey[]): Promise<(AccountInfo<Buffer> | null)[]>;
   getParsedTokenAccountsByOwner(
     owner: PublicKey,
     filter: { mint: PublicKey },
@@ -127,6 +136,19 @@ export interface PoolReader {
     transferHookAccountMetas?: unknown[];
   };
   getActiveBin(): Promise<{ binId: number }>;
+  /** SDK internals for the one-call depth read; absent on structural fakes. */
+  readonly program?: {
+    readonly programId: PublicKey;
+    readonly coder: { accounts: { decode(name: string, data: Buffer): unknown } };
+    readonly account: {
+      lbPair: { idlAccount: { name: string } };
+      binArray: { idlAccount: { name: string } };
+    };
+  };
+  getBins?(
+    lbPair: PublicKey, lower: number, upper: number, baseDecimals: number, quoteDecimals: number,
+    lowerBinArray?: unknown, upperBinArray?: unknown,
+  ): Promise<{ binId: number; xAmount: BnLike; yAmount: BnLike; pricePerToken: string }[]>;
   /** Pool-wide bin reserves; present on real SDK instances (depth sampler). */
   getBinsBetweenLowerAndUpperBound?(
     lowerBinId: number,
@@ -262,6 +284,9 @@ function safeEndpoint(url: string): string {
   }
 }
 
+/** Bins beyond the sampled range whose bin arrays the one-call depth read also fetches. */
+const DEPTH_PREFETCH_BINS = 30;
+
 export class MeteoraReads {
   private readonly endpoints: Endpoint[];
   private readonly wallet: PublicKey;
@@ -275,6 +300,8 @@ export class MeteoraReads {
   private readonly retries: number;
   private readonly retryDelayMs: number;
   private readonly priceTtlMs: number;
+  /** Last active bin seen per pool; centres the next sample's bin-array prefetch. */
+  private readonly depthHints = new Map<string, number>();
   private operationAttempt = 1;
   private operationEndpoint: string | null = null;
   private operationTimings: Record<string, number> | null = null;
@@ -645,6 +672,49 @@ export class MeteoraReads {
   }
 
   /**
+   * pair + the bin arrays around the last active bin in a single getMultipleAccounts, then
+   * the SDK's own `getBins` on the decoded arrays (no further RPC). Returns null whenever it
+   * cannot be exact: no hint yet, no SDK internals, a missing array, or the active bin
+   * left the prefetched arrays.
+   */
+  private async oneCallDepth(
+    pool: PoolReader,
+    endpoint: Endpoint,
+    poolAddress: string,
+    binsEachSide: number,
+  ): Promise<{ active: number; bins: { binId: number; xAmount: BnLike; yAmount: BnLike; pricePerToken: string }[] } | null> {
+    const sdk = pool.program;
+    const hint = this.depthHints.get(poolAddress);
+    const connection = endpoint.connection;
+    if (!sdk || !pool.getBins || !connection.getMultipleAccountsInfo || hint === undefined) return null;
+    const arrayIndex = (bin: number) => binIdToBinArrayIndex(new BN(bin)).toNumber();
+    // Reach past the sampled range so a few bins of drift still land in the same call.
+    const wanted = [...new Set([
+      arrayIndex(hint - binsEachSide - DEPTH_PREFETCH_BINS),
+      arrayIndex(hint + binsEachSide + DEPTH_PREFETCH_BINS),
+    ])];
+    const [pairInfo, ...arrayInfos] = await connection.getMultipleAccountsInfo([
+      pool.pubkey,
+      ...wanted.map((index) => deriveBinArray(pool.pubkey, new BN(index), sdk.programId)[0]),
+    ]);
+    if (!pairInfo) return null;
+    const { activeId } = sdk.coder.accounts.decode(sdk.account.lbPair.idlAccount.name, pairInfo.data) as { activeId: number };
+    const decoded = new Map(wanted.map((index, i) => [
+      index,
+      arrayInfos[i] ? sdk.coder.accounts.decode(sdk.account.binArray.idlAccount.name, arrayInfos[i]!.data) : null,
+    ]));
+    const lower = activeId - binsEachSide;
+    const upper = activeId + binsEachSide;
+    const lowerArray = decoded.get(arrayIndex(lower));
+    const upperArray = decoded.get(arrayIndex(upper));
+    if (!lowerArray || !upperArray) return null;
+    const bins = await pool.getBins(
+      pool.pubkey, lower, upper, pool.tokenX.mint.decimals, pool.tokenY.mint.decimals, lowerArray, upperArray,
+    );
+    return { active: activeId, bins };
+  }
+
+  /**
    * Pool liquidity in the active bin and `binsEachSide` neighbours: whole-pool
    * reserves, not ours. The active id comes from `getActiveBin()`, which
    * refetches the pair; the SDK's `getBinsAroundActiveBin` reads a cached one.
@@ -659,11 +729,15 @@ export class MeteoraReads {
       if (!pool.getBinsBetweenLowerAndUpperBound) {
         throw new Error('SDK pool reader has no bin range read');
       }
-      const active = (await pool.getActiveBin()).binId;
-      const { bins } = await pool.getBinsBetweenLowerAndUpperBound(
+      // One getMultipleAccounts (20 CU) when the SDK internals are there and the active bin
+      // stayed inside the prefetched arrays; otherwise the two-read path (about 50 CU).
+      const quick = await this.oneCallDepth(pool, endpoint, poolAddress, binsEachSide);
+      const active = quick?.active ?? (await pool.getActiveBin()).binId;
+      const bins = quick?.bins ?? (await pool.getBinsBetweenLowerAndUpperBound(
         active - binsEachSide,
         active + binsEachSide,
-      );
+      )).bins;
+      this.depthHints.set(poolAddress, active);
       return {
         ts: this.now() / 1000,
         pool: poolAddress,

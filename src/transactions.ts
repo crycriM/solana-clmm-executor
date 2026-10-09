@@ -7,7 +7,12 @@
  * policy reservation → sign → submit → confirm → receipt.
  */
 
-import { Transaction, VersionedTransaction } from '@solana/web3.js';
+import {
+  ComputeBudgetProgram,
+  Transaction,
+  TransactionExpiredBlockheightExceededError,
+  VersionedTransaction,
+} from '@solana/web3.js';
 import {
   PolicyRejected,
   type PolicyDecision,
@@ -23,6 +28,8 @@ const RECEIPT_INITIAL_DELAY_MS = 250;
 const RECEIPT_MAX_DELAY_MS = 2_000;
 // A single unprioritized send can be dropped (met-usdc, 2026-10-07: blockhash expired, never landed).
 const REBROADCAST_INTERVAL_MS = 2_000;
+// Pause between the two "signature is nowhere on chain" checks that gate a retry.
+const STATUS_RECHECK_MS = 2_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,6 +73,13 @@ export class SubmissionAmbiguous extends Error {
     super(detail);
   }
 }
+
+/**
+ * Never landed and never can: the blockhash expired and the signature is absent
+ * on chain on two checks. Still a SubmissionAmbiguous to every other caller;
+ * `executeLegacyTransaction` alone uses it to retry once.
+ */
+export class TransactionDropped extends SubmissionAmbiguous {}
 
 /** The chain receipt proves that a submitted transaction failed atomically. */
 export class ConfirmedTransactionFailed extends Error {
@@ -120,6 +134,11 @@ export interface ExecutionConnection {
     signature: string,
     config: { commitment: ExecutionCommitment; maxSupportedTransactionVersion: number },
   ): Promise<{ slot: number; blockTime?: number | null; meta: TransactionMeta | null } | null>;
+  /** Gates the dropped-transaction retry; a connection without it never retries. */
+  getSignatureStatuses?(
+    signatures: string[],
+    config: { searchTransactionHistory: boolean },
+  ): Promise<{ value: Array<unknown | null> }>;
 }
 
 export interface ExecuteLegacyOptions {
@@ -128,6 +147,11 @@ export interface ExecuteLegacyOptions {
   policy: TransactionPolicy;
   policyInput: PolicyInput;
   commitment: ExecutionCommitment;
+  /**
+   * Priority-fee ceiling for the single retry of a provably dropped transaction
+   * (MAX_PRIORITY_FEE_LAMPORTS). First attempts never carry a priority fee.
+   */
+  retryPriorityFeeLamports?: number;
 }
 
 export interface ExecutedTransaction {
@@ -142,6 +166,21 @@ export interface ExecutedTransaction {
 interface BlockhashInfo {
   blockhash: string;
   lastValidBlockHeight: number;
+}
+
+/** True only if the signature is unknown to the cluster on two checks, history included. */
+async function signatureAbsent(connection: ExecutionConnection, signature: string): Promise<boolean> {
+  if (!connection.getSignatureStatuses) return false;
+  try {
+    for (let check = 0; check < 2; check += 1) {
+      if (check > 0) await delay(STATUS_RECHECK_MS);
+      const { value } = await connection.getSignatureStatuses([signature], { searchTransactionHistory: true });
+      if (value[0] != null) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -197,6 +236,7 @@ async function admitAndSettle(
     );
   }
   let confirmation: Awaited<ReturnType<ExecutionConnection['confirmTransaction']>> | null = null;
+  let expired = false;
   // Same signed bytes, same signature: a duplicate send executes at most once, and
   // after the blockhash expires the cluster rejects it. Errors are not informative here.
   const rebroadcast = setInterval(() => {
@@ -205,9 +245,11 @@ async function admitAndSettle(
   }, REBROADCAST_INTERVAL_MS);
   try {
     confirmation = await connection.confirmTransaction({ ...blockhash, signature }, commitment);
-  } catch {
+  } catch (error) {
     // A confirmation exception does not tell us whether the transaction landed.
     // The indexed receipt can still prove success or a failed, fee-paying write.
+    // Only a blockheight expiry proves the blockhash can no longer be included.
+    expired = error instanceof TransactionExpiredBlockheightExceededError;
   } finally {
     clearInterval(rebroadcast);
   }
@@ -224,7 +266,9 @@ async function admitAndSettle(
     );
   }
   if (!chainTx?.meta) {
-    throw new SubmissionAmbiguous(
+    const Outcome = expired && await signatureAbsent(connection, signature)
+      ? TransactionDropped : SubmissionAmbiguous;
+    throw new Outcome(
       'confirmed transaction receipt was unavailable',
       signature,
       undefined,
@@ -297,6 +341,32 @@ export async function confirmedReceipt(
  * builder and make the policy boundary meaningless.
  */
 export async function executeLegacyTransaction(
+  tx: Transaction,
+  options: ExecuteLegacyOptions,
+): Promise<ExecutedTransaction> {
+  try {
+    return await executeOnce(tx, options);
+  } catch (error) {
+    if (!(error instanceof TransactionDropped)) throw error;
+    // The first signature is provably dead, so a second message cannot double-execute.
+    // It re-runs policy and simulation and commits the run budget again (conservative).
+    return executeOnce(withRetryPriorityFee(tx, options.retryPriorityFeeLamports), options);
+  }
+}
+
+/** Same instructions plus a compute-unit price that spends at most `capLamports`. */
+function withRetryPriorityFee(tx: Transaction, capLamports = 0): Transaction {
+  const retry = new Transaction({ feePayer: tx.feePayer }).add(...tx.instructions);
+  // The policy requires an explicit limit next to a nonzero price; without one, retry unprioritized.
+  const limit = tx.instructions.find((instruction) =>
+    instruction.programId.equals(ComputeBudgetProgram.programId)
+    && instruction.data.length === 5 && instruction.data[0] === 2)?.data.readUInt32LE(1);
+  const price = limit ? Math.floor((capLamports * 1_000_000) / limit) : 0;
+  if (price > 0) retry.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: price }));
+  return retry;
+}
+
+async function executeOnce(
   tx: Transaction,
   options: ExecuteLegacyOptions,
 ): Promise<ExecutedTransaction> {

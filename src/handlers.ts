@@ -660,6 +660,7 @@ export function createM4Handlers(reads: WriteReads, dependencies: WriteDependenc
       policy: dependencies.policy,
       policyInput,
       commitment,
+      retryPriorityFeeLamports: dependencies.config.maxPriorityFeeLamports,
     });
   };
   const recordOutcome = (audit: WriteAuditContext, error: unknown): ExecResponse<never> | null => {

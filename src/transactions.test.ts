@@ -1,8 +1,10 @@
 import { createPrivateKey, sign as signEd25519 } from 'node:crypto';
 import {
+  ComputeBudgetProgram,
   Keypair,
   SystemProgram,
   Transaction,
+  TransactionExpiredBlockheightExceededError,
 } from '@solana/web3.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from './config.js';
@@ -11,6 +13,8 @@ import type { Signer } from './signer.js';
 import {
   ConfirmedTransactionFailed,
   executeLegacyTransaction,
+  SubmissionAmbiguous,
+  TransactionDropped,
   type ExecutionConnection,
 } from './transactions.js';
 import { baseEnv } from './testing.js';
@@ -197,6 +201,98 @@ describe('executeLegacyTransaction', () => {
     expect(sends).toBe(3);  // original + rebroadcasts at 2 s and 4 s, none after the throw
     await vi.advanceTimersByTimeAsync(10_000);
     expect(sends).toBe(3);
+  });
+
+  describe('dropped transaction retry', () => {
+    const CAP = 50_000;  // retryPriorityFeeLamports; the test policy allows 100,000
+    const LIMIT = 600_000;
+
+    /** Blockhash expiry on every attempt unless `landsOnAttempt` is reached; statuses say "unknown". */
+    function dropFixture(opts: { landsOnAttempt?: number; confirmError?: Error; statusFound?: boolean; withLimit?: boolean } = {}) {
+      const f = fixture();
+      if (opts.withLimit !== false) f.tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: LIMIT }));
+      const sent: Buffer[] = [];
+      let statusCalls = 0;
+      f.connection.getLatestBlockhash = async () => ({ blockhash: Keypair.generate().publicKey.toBase58(), lastValidBlockHeight: 7 });
+      f.connection.sendRawTransaction = async (raw) => { sent.push(Buffer.from(raw)); return base58(raw.subarray(1, 65)); };
+      f.connection.confirmTransaction = async ({ signature }) => {
+        if (sent.length >= (opts.landsOnAttempt ?? Infinity)) return { value: { err: null } };
+        throw opts.confirmError ?? new TransactionExpiredBlockheightExceededError(signature);
+      };
+      f.connection.getTransaction = async () =>
+        (sent.length >= (opts.landsOnAttempt ?? Infinity) ? { slot: 42, blockTime: 1_700_000_000, meta: { fee: 5_000 } } : null);
+      f.connection.getSignatureStatuses = async () => {
+        statusCalls += 1;
+        return { value: [opts.statusFound ? { confirmationStatus: 'confirmed' } : null] };
+      };
+      const run = () => executeLegacyTransaction(f.tx, {
+        connection: f.connection, signer: f.signer, policy: f.policy, commitment: 'finalized',
+        policyInput: { writableAccounts: [f.recipient], amounts: { solSpendLamports: 1 } },
+        retryPriorityFeeLamports: CAP,
+      });
+      return { f, sent, run, statusCalls: () => statusCalls };
+    }
+    const computeBudget = (raw: Buffer, tag: number) => Transaction.from(raw).instructions.filter(
+      (ix) => ix.programId.equals(ComputeBudgetProgram.programId) && ix.data[0] === tag);
+
+    it('re-sends a provably dropped transaction once, with a fresh blockhash and a capped priority fee', async () => {
+      vi.useFakeTimers();
+      const { f, sent, run } = dropFixture({ landsOnAttempt: 2 });
+      const result = run();
+      await vi.runAllTimersAsync();
+      await expect(result).resolves.toMatchObject({ receipt: { slot: 42, status: 'finalized' } });
+      expect(sent).toHaveLength(2);
+      expect(f.signCalls()).toBe(2);
+      expect(computeBudget(sent[0]!, 3)).toHaveLength(0);  // first attempt: no priority fee
+      const [price] = computeBudget(sent[1]!, 3);
+      const micro = price!.data.readBigUInt64LE(1);
+      expect(micro).toBe(BigInt(Math.floor((CAP * 1_000_000) / LIMIT)));
+      expect((micro * BigInt(LIMIT) + 999_999n) / 1_000_000n <= BigInt(CAP)).toBe(true);
+      expect(Transaction.from(sent[1]!).recentBlockhash).not.toBe(Transaction.from(sent[0]!).recentBlockhash);
+    });
+
+    it('does not retry when the signature is found on chain after expiry', async () => {
+      vi.useFakeTimers();
+      const { f, sent, run } = dropFixture({ statusFound: true });
+      const result = expect(run()).rejects.toSatisfy(
+        (e) => e instanceof SubmissionAmbiguous && !(e instanceof TransactionDropped));
+      await vi.runAllTimersAsync();
+      await result;
+      expect(sent).toHaveLength(1);
+      expect(f.signCalls()).toBe(1);
+    });
+
+    it('does not retry when expiry is not proven (confirmation timed out)', async () => {
+      vi.useFakeTimers();
+      const { f, sent, run, statusCalls } = dropFixture({ confirmError: new Error('timeout') });
+      const result = expect(run()).rejects.toSatisfy(
+        (e) => e instanceof SubmissionAmbiguous && !(e instanceof TransactionDropped));
+      await vi.runAllTimersAsync();
+      await result;
+      expect(sent).toHaveLength(1);
+      expect(f.signCalls()).toBe(1);
+      expect(statusCalls()).toBe(0);
+    });
+
+    it('retries at most once, then reports the second drop as ambiguous', async () => {
+      vi.useFakeTimers();
+      const { f, sent, run } = dropFixture();
+      const result = expect(run()).rejects.toBeInstanceOf(TransactionDropped);
+      await vi.runAllTimersAsync();
+      await result;
+      expect(sent).toHaveLength(2);
+      expect(f.signCalls()).toBe(2);
+    });
+
+    it('retries without a price when the transaction has no explicit compute-unit limit', async () => {
+      vi.useFakeTimers();
+      const { sent, run } = dropFixture({ landsOnAttempt: 2, withLimit: false });
+      const result = run();
+      await vi.runAllTimersAsync();
+      await expect(result).resolves.toMatchObject({ receipt: { slot: 42 } });
+      expect(sent).toHaveLength(2);
+      expect(computeBudget(sent[1]!, 3)).toHaveLength(0);
+    });
   });
 
   it('accepts a successful receipt when confirmation throws', async () => {
