@@ -782,6 +782,34 @@ describe('gap handling and backfill', () => {
     await h.stream.close();
   });
 
+  it('skips failed transactions during recovery but keeps them in the gap bounds', async () => {
+    const fetched: string[] = [];
+    const h = harness({
+      fetchLogs: async (signature) => {
+        fetched.push(signature);
+        return signature === 'sig-ok'
+          ? { slot: 101, blockTime: 1756900101, logs: swapLogs({ startBinId: 10, endBinId: 11 }) }
+          : null;
+      },
+    });
+    h.stream.start();
+    await emit(h, 'sig-known', 100, swapLogs({ startBinId: 1, endBinId: 2 }));
+    h.deps.signatures.set(POOL, [
+      { slot: 103, signature: 'sig-failed-newest', err: { InstructionError: [0, 'Custom'] } },
+      { slot: 102, signature: 'sig-failed', err: { InstructionError: [0, 'Custom'] } },
+      { slot: 101, signature: 'sig-ok', err: null },
+    ] as never);
+
+    const result = await h.stream.recover(POOL);
+
+    expect(fetched).toEqual(['sig-ok']);             // failed ones cost no getTransaction
+    expect(result.backfilled).toBe(1);
+    expect(h.gaps[0]).toMatchObject({
+      to_signature: 'sig-failed-newest', to_slot: 103, backfilled: 1, recovery_complete: true,
+    });
+    await h.stream.close();
+  });
+
   it('replays nothing without a cursor rather than querying unbounded history', async () => {
     // No durable cursor means "we have never emitted"; paging a pool's whole
     // signature history would be both ambiguous and enormous. The gap is

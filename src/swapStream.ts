@@ -652,6 +652,8 @@ export class SwapStream {
         recoveryComplete = false;
         break;
       }
+      // A failed transaction never emits a row (decodeLogs drops it): skip its 40 CU read.
+      if (info.err) continue;
       let tx: Awaited<ReturnType<typeof this.logsOf>> = null;
       try {
         tx = await withRetry(async () => {
